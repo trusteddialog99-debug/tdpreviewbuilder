@@ -1,10 +1,13 @@
-# trustedDialog Preview Builder - GMX PPTX Edition
+# trustedDialog Preview Builder - GMX
 
-Diese Version nutzt die GMX-PowerPoint-Vorlage als visuelle Quelle für die statischen Postfachbereiche. In Streamlit werden Absender, Betreff, Preview, Avatar und Preview-Bild dynamisch darüber aufgebaut.
+Alle benötigten Dateien liegen direkt im Hauptverzeichnis. Es ist kein `assets`-Ordner erforderlich.
 
-## Start
+GitHub-Struktur:
+- app.py
+- requirements.txt
+- gmx_base_crop.png
+- phone_frame.png
+- README.md
 
-```powershell
-pip install -r requirements.txt
-streamlit run app.py
-```
+Streamlit starten mit:
+`streamlit run app.py`

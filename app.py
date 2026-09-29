@@ -4,9 +4,9 @@ import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 st.set_page_config(page_title='trustedDialog Preview Builder - GMX', page_icon='✉️', layout='wide')
-ROOT=Path(__file__).parent; ASSETS=ROOT/'assets'
-BASE=Image.open(ASSETS/'gmx_base_crop.png').convert('RGBA')
-PHONE=Image.open(ASSETS/'phone_frame.png').convert('RGBA')
+ROOT=Path(__file__).parent
+BASE=Image.open(ROOT/'gmx_base_crop.png').convert('RGBA')
+PHONE=Image.open(ROOT/'phone_frame.png').convert('RGBA')
 
 def font(sz,bold=False):
     for p in ['/usr/share/fonts/truetype/arial/arialbd.ttf' if bold else '/usr/share/fonts/truetype/arial/arial.ttf','/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf']:
