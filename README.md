@@ -1,7 +1,10 @@
-# trustedDialog Preview Builder CI Mockup
+# trustedDialog Preview Builder - GMX PPTX Edition
 
-Streamlit-MVP mit einer WEB.DE-Mobile-Vorschau, die visuell an die bereitgestellte Referenz angelehnt ist.
+Diese Version nutzt die GMX-PowerPoint-Vorlage als visuelle Quelle für die statischen Postfachbereiche. In Streamlit werden Absender, Betreff, Preview, Avatar und Preview-Bild dynamisch darüber aufgebaut.
 
-Start:
-`pip install -r requirements.txt`
-`streamlit run app.py`
+## Start
+
+```powershell
+pip install -r requirements.txt
+streamlit run app.py
+```
