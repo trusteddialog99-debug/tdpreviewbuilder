@@ -1,13 +1,9 @@
-# trustedDialog Preview Builder - GMX
+# trustedDialog Preview Builder - GMX corrected
 
-Alle benötigten Dateien liegen direkt im Hauptverzeichnis. Es ist kein `assets`-Ordner erforderlich.
+Die statische GMX-Oberfläche basiert direkt auf dem in der PPTX eingebetteten Screenshot. Nur die kundenspezifischen Elemente der ersten Mail werden dynamisch ersetzt.
 
-GitHub-Struktur:
+Alle Dateien direkt in GitHub hochladen:
 - app.py
 - requirements.txt
-- gmx_base_crop.png
+- gmx_reference.png
 - phone_frame.png
-- README.md
-
-Streamlit starten mit:
-`streamlit run app.py`
