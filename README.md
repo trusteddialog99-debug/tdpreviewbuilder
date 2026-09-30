@@ -1,9 +1,2 @@
-# trustedDialog Preview Builder - GMX PPT render edition
-
-Diese Version nutzt einen direkten Crop des final gerenderten PowerPoint-Mockups. Dadurch bleiben iPhone Frame, Header, Otto Holler, GMX Magazin, Shopping World und die Navigation exakt Bestandteil der Vorlage.
-
-Direkt ins GitHub-Hauptverzeichnis hochladen:
-- app.py
-- requirements.txt
-- gmx_ppt_reference.png
-- blue_tick.png
+# GMX Preview Builder v5
+Die Textpositionen berücksichtigen die tatsächlichen PowerPoint-Textfeldränder: 0,10 Zoll links und 0,05 Zoll oben. Avatar, Blue Tick und Preview-Bild verwenden die exakten PPT-Objektmaße.
