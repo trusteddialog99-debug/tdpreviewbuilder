@@ -1,9 +1,9 @@
-# trustedDialog Preview Builder - GMX pixelgenau
+# trustedDialog Preview Builder - GMX PPT render edition
 
-Die App verwendet den nativen GMX-Screenshot und den iPhone-Frame direkt aus der gelieferten PowerPoint-Vorlage. Die Koordinaten von Avatar, Texten, Uhrzeit, Blue Tick und Preview-Bild werden aus der PPTX-Geometrie übernommen.
+Diese Version nutzt einen direkten Crop des final gerenderten PowerPoint-Mockups. Dadurch bleiben iPhone Frame, Header, Otto Holler, GMX Magazin, Shopping World und die Navigation exakt Bestandteil der Vorlage.
 
-Alle Dateien direkt ins GitHub-Hauptverzeichnis hochladen:
+Direkt ins GitHub-Hauptverzeichnis hochladen:
 - app.py
 - requirements.txt
-- gmx_screen.png
-- iphone_frame.png
+- gmx_ppt_reference.png
+- blue_tick.png
