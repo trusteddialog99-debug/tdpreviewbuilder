@@ -1,12 +1,8 @@
-# trustedDialog Preview Builder - GitHub Version
+# trustedDialog Preview Builder - Statusbar Ratio Update
 
-Aktualisiert gegenüber der letzten Version:
-- WLAN wird als dreistufiges SVG-Signal dargestellt.
-- Das rechte Header-Icon ist ein Compose-/Neue-E-Mail-Symbol mit Stift und Quadrat.
-- Batterieanzeige zeigt `85` in einem schwarzen, abgerundeten Batterieelement mit grauem Batteriepol.
-- Die bereits korrigierten Nicht-trustedDialog-Avatarfarben bleiben erhalten: `#b8ddfd` / `#1375d7`.
-
-GitHub:
-- `app.py`
-- `requirements.txt`
-- `README.md`
+Änderung dieser Version:
+- Uhrzeit links deutlich kleiner und proportional näher an der iOS-Referenz.
+- Mobilfunksignal, WLAN und Batterie ebenfalls verkleinert.
+- Engerer Abstand zwischen den rechten Status-Icons.
+- Batterie kompakter, inklusive grauem Batteriepol.
+- Dynamic Island und alle bisherigen trustedDialog-/Avatar-/Footer-Anpassungen bleiben unverändert.
