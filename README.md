@@ -1,8 +1,7 @@
-# trustedDialog Preview Builder - Defaults restored
+# trustedDialog Preview Builder - First avatar color update
 
-Einzige Änderung gegenüber der vorherigen Version:
-- Absender / Marke ist mit `Absender` vorausgefüllt.
-- Betreff ist mit `Betreff` vorausgefüllt.
-- Preview-Text ist mit `Preview-Text` vorausgefüllt.
+Nur die Fallback-Darstellung des Avatars der ersten Mail wurde angepasst:
+- Hintergrund: `#b8ddfd`
+- Schrift: `#1375d7`
 
-Die funktionierende Auspunktung sowie die 37-Zeichen-Grenze bleiben unverändert.
+Alle übrigen Funktionen und Layouts bleiben unverändert.
