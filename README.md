@@ -1,8 +1,8 @@
-# trustedDialog Preview Builder - Empty defaults + ellipsis
+# trustedDialog Preview Builder - Defaults restored
 
-Geändert wurden nur diese Punkte:
-- Absender / Marke, Betreff und Preview-Text starten leer statt mit vorausgefüllten Werten.
-- Alle drei Eingaben erlauben weiterhin maximal 37 Zeichen.
-- Bei längeren Inhalten wird die Darstellung im Scribble auf 34 Zeichen plus `...` gekürzt.
+Einzige Änderung gegenüber der vorherigen Version:
+- Absender / Marke ist mit `Absender` vorausgefüllt.
+- Betreff ist mit `Betreff` vorausgefüllt.
+- Preview-Text ist mit `Preview-Text` vorausgefüllt.
 
-Die übrigen Anpassungen der vorherigen Version bleiben unverändert.
+Die funktionierende Auspunktung sowie die 37-Zeichen-Grenze bleiben unverändert.

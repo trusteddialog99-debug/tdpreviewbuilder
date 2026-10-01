@@ -10,7 +10,7 @@ def uri(f):
 def e(x):return html.escape(x or '',quote=True)
 def display_text(x):
  return e(x[:34]+'...' if len(x)>34 else x)
-for k,v in {'sender':'','subject':'','preheader':'','color':'#8EA8CE'}.items():st.session_state.setdefault(k,v)
+for k,v in {'sender':'Absender','subject':'Betreff','preheader':'Preview-Text','color':'#8EA8CE'}.items():st.session_state.setdefault(k,v)
 st.title('trustedDialog Preview Builder');st.caption('GMX · iOS · HTML/CSS-Preview')
 l,r=st.columns([.86,1.14],gap='large')
 with l:
