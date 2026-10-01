@@ -1,16 +1,8 @@
-# trustedDialog Preview Builder - Avatar + iPhone Frame Fix
+# trustedDialog Preview Builder - Round Avatar Export Fix
 
-Es wurden ausschließlich diese beiden Punkte angepasst:
+Diese Version basiert auf der bereitgestellten `app.py` und ändert ausschließlich die Avatar-Behandlung beim PNG-Export.
 
-1. **Avatar-Logo**
-   - bleibt rund maskiert,
-   - wird mit `contain` statt `cover` dargestellt,
-   - wird dadurch weder in der Vorschau noch beim PNG-Export abgeschnitten.
-
-2. **iPhone-Frame**
-   - dunkler/schwarzer Grundrahmen,
-   - metallisch graue Außen- und Innenkanten,
-   - zusätzliche seitliche Hardware-Konturen,
-   - dieselbe Frame-Darstellung wird auch beim PNG-Export erzwungen.
-
-Alle übrigen Funktionen und Layoutwerte bleiben unverändert.
+- Live-Vorschau bleibt unverändert.
+- Der bestehende iPhone-Frame bleibt unverändert.
+- Das Avatar-Logo bleibt beim Export 38 × 38 px und kreisrund.
+- Das Avatar-Bild wird beim Export nicht mehr in ein CSS-Hintergrundbild umgewandelt, wodurch die runde Darstellung verloren bzw. abgeschnitten werden konnte.
