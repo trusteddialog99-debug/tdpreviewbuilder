@@ -28,11 +28,11 @@ for k,v in {'sender':'Absender','subject':'Betreff','preheader':'Preview-Text','
 st.title('trustedDialog Preview Builder');st.caption('GMX · iOS · HTML/CSS-Preview')
 l,r=st.columns([.86,1.14],gap='large')
 with l:
- st.subheader('Inhalte');st.text_input('Absender / Marke',key='sender',max_chars=37);st.text_input('Betreff',key='subject',max_chars=37);st.text_input('Preview-Text',key='preheader',max_chars=37);st.color_picker('Fallback-Avatarfarbe',key='color');af=st.file_uploader('Avatar / Logo',type=['svg','png','jpg','jpeg','webp'],help='SVG wird direkt und ohne Rasterung dargestellt.');pf=st.file_uploader('Preview-Bild 1088 × 464 px',type=['png','jpg','jpeg','webp'])
+ st.subheader('Inhalte');st.text_input('Absender / Marke',key='sender',max_chars=37);st.text_input('Betreff',key='subject',max_chars=37);st.text_input('Preview-Text',key='preheader',max_chars=37);st.color_picker('Fallback-Avatarfarbe',key='color');af=st.file_uploader('Avatar / Logo',type=['svg','png','jpg','jpeg','webp'],help='SVG wird direkt nach dem Upload im Browser in PNG konvertiert und anschließend nur noch als PNG verwendet.');pf=st.file_uploader('Preview-Bild 1088 × 464 px',type=['png','jpg','jpeg','webp'])
 sender,subject,pre=display_text(st.session_state.sender),display_text(st.session_state.subject),display_text(st.session_state.preheader)
 download_sender=json.dumps(st.session_state.sender or 'Absender',ensure_ascii=False)
 avsrc,psrc=uri(af),uri(pf); letters=e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
-av=f'<img class="avatar" src="{avsrc}">' if avsrc else f'<span class="avatar fallback" style="background:#b8ddfd;color:#1375d7">{letters}</span>'
+av=f'<img class="avatar" id="uploaded-avatar" data-is-svg="{str(bool(af and af.name.lower().endswith(".svg"))).lower()}" src="{avsrc}">' if avsrc else f'<span class="avatar fallback" style="background:#b8ddfd;color:#1375d7">{letters}</span>'
 pv=f'<img class="preview" src="{psrc}">' if psrc else '<div class="preview placeholder">Bild einfügen</div>'
 seal=f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">'
 H=f'''<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script><style>
@@ -48,29 +48,22 @@ H=f'''<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.
 const p=n=>String(n).padStart(2,'0'),fmt=d=>p(d.getHours())+':'+p(d.getMinutes());
 function tick(){{let n=new Date();document.getElementById('now').textContent=fmt(n);document.querySelectorAll('[data-off]').forEach(x=>x.textContent=fmt(new Date(n.getTime()+Number(x.dataset.off)*60000)))}}
 tick();setInterval(tick,30000);
-async function avatarToCircularPng(img,size=152){{
- return new Promise((resolve,reject)=>{{
-  const source=new Image();
-  source.onload=()=>{{
-   try{{
-    const canvas=document.createElement('canvas');
-    canvas.width=size;canvas.height=size;
-    const ctx=canvas.getContext('2d');
-    ctx.clearRect(0,0,size,size);
-    ctx.save();
-    ctx.beginPath();ctx.arc(size/2,size/2,size/2,0,Math.PI*2);ctx.clip();
-    const sw=source.naturalWidth||size,sh=source.naturalHeight||size;
-    const scale=Math.max(size/sw,size/sh);
-    const dw=sw*scale,dh=sh*scale;
-    ctx.drawImage(source,(size-dw)/2,(size-dh)/2,dw,dh);
-    ctx.restore();
-    resolve(canvas.toDataURL('image/png'));
-   }}catch(error){{reject(error)}}
-  }};
-  source.onerror=reject;
-  source.src=img.currentSrc||img.src;
- }});
+async function svgAvatarToPngImmediately(){{
+ const img=document.getElementById('uploaded-avatar');
+ if(!img || img.dataset.isSvg!=='true') return;
+ await new Promise(resolve=>{{if(img.complete) resolve(); else {{img.onload=resolve;img.onerror=resolve;}}}});
+ const source=new Image();
+ await new Promise((resolve,reject)=>{{source.onload=resolve;source.onerror=reject;source.src=img.currentSrc||img.src;}});
+ const size=256;
+ const canvas=document.createElement('canvas');canvas.width=size;canvas.height=size;
+ const ctx=canvas.getContext('2d');ctx.clearRect(0,0,size,size);
+ const sw=source.naturalWidth||size,sh=source.naturalHeight||size;
+ const scale=Math.max(size/sw,size/sh),dw=sw*scale,dh=sh*scale;
+ ctx.drawImage(source,(size-dw)/2,(size-dh)/2,dw,dh);
+ img.src=canvas.toDataURL('image/png');
+ img.removeAttribute('data-is-svg');
 }}
+svgAvatarToPngImmediately().catch(err=>console.warn('SVG-to-PNG conversion failed',err));
 async function downloadPreview(){{
  const button=document.querySelector('.downloadbtn');
  const phone=document.querySelector('.phone');
@@ -80,10 +73,6 @@ async function downloadPreview(){{
   if(typeof html2canvas==='undefined') throw new Error('html2canvas konnte nicht geladen werden');
   await document.fonts.ready;
   await Promise.all(Array.from(phone.querySelectorAll('img')).map(img=>img.complete ? Promise.resolve() : new Promise(resolve=>{{img.onload=resolve;img.onerror=resolve;}})));
-  const uploadedAvatar=phone.querySelector('.row.td img.avatar');
-  if(uploadedAvatar){{
-   try{{uploadedAvatar.dataset.exportPng=await avatarToCircularPng(uploadedAvatar,152)}}catch(error){{console.warn('Avatar conversion failed',error)}}
-  }}
   const canvas=await html2canvas(phone,{{
    backgroundColor:null,
    scale:3,
@@ -100,40 +89,14 @@ async function downloadPreview(){{
     clonedPhone.style.border='2px solid #777';
     clonedPhone.style.boxShadow='inset 0 0 0 2px #d4d4d4';
     clonedPhone.style.opacity='1';
-    doc.querySelectorAll('img.preview').forEach(img=>{{
-     // Keep the original uploaded PNG as an IMG element. Converting it into a
-     // CSS background caused html2canvas to resample it too aggressively.
-     const wrap=img.closest('.pwrap');
-     if(wrap){{
-      wrap.style.width='253px';
-      wrap.style.height='96px';
-      wrap.style.borderRadius='6px';
-      wrap.style.overflow='hidden';
-      wrap.style.backgroundImage='none';
-     }}
-     img.style.width='253px';
-     img.style.height='96px';
-     img.style.minWidth='253px';
-     img.style.minHeight='96px';
-     img.style.maxWidth='253px';
-     img.style.maxHeight='96px';
-     img.style.objectFit='cover';
-     img.style.objectPosition='center center';
-     img.style.borderRadius='6px';
-     img.style.display='block';
-     img.style.visibility='visible';
-     img.style.imageRendering='auto';
-    }});
+    // Preview image is intentionally left untouched: html2canvas captures the exact live IMG.
+
     doc.querySelectorAll('img.avatar').forEach(img=>{{
-     const originalIndex=Array.from(phone.querySelectorAll('img.avatar')).indexOf(phone.querySelectorAll('img.avatar')[Array.from(doc.querySelectorAll('img.avatar')).indexOf(img)]);
-     const original=phone.querySelectorAll('img.avatar')[originalIndex];
-     if(original && original.dataset.exportPng) img.src=original.dataset.exportPng;
      img.style.width='38px';img.style.height='38px';
      img.style.minWidth='38px';img.style.minHeight='38px';
      img.style.maxWidth='38px';img.style.maxHeight='38px';
-     img.style.borderRadius='50%';
-     img.style.objectFit='cover';img.style.objectPosition='center center';
-     img.style.display='block';img.style.visibility='visible';
+     img.style.borderRadius='50%';img.style.objectFit='cover';
+     img.style.objectPosition='center center';img.style.display='block';img.style.visibility='visible';
     }});
    }}
   }});

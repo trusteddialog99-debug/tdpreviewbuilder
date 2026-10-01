@@ -1,9 +1,11 @@
-# trustedDialog Preview Builder - Preview Image Export Quality
+# trustedDialog Preview Builder - Corrected Preview Export
 
-Nur der Export des hochgeladenen Preview-Bildes wurde angepasst:
-- Das hochgeladene PNG bleibt beim Export ein echtes `<img>`-Element.
-- Es wird nicht mehr in ein CSS-Hintergrundbild umgewandelt.
-- Größe, `object-fit: cover`, Bildposition und Rundung entsprechen der Live-Vorschau.
-- Der PNG-Export erfolgt in 3-facher Auflösung für eine sauberere Darstellung.
+Diese Version basiert auf dem funktionierenden Stand mit direkter SVG-zu-PNG-Konvertierung beim Avatar-Upload.
 
-Die bestehende SVG-Avatar-zu-PNG-Konvertierung wurde unverändert beibehalten.
+Geändert wurde ausschließlich der Export des Preview-Bildes:
+- Das Preview-Bild wird im Export nicht mehr verändert, ersetzt oder neu dimensioniert.
+- `html2canvas` übernimmt exakt das Bild-Element aus der Live-Vorschau.
+- Dadurch bleiben Größe, Ausschnitt, Rundung und Position identisch zur Vorschau.
+- Die Exportauflösung wurde auf 3x erhöht, ohne die CSS-Geometrie zu verändern.
+
+Die funktionierende SVG-zu-PNG-Konvertierung des Avatars bleibt unverändert erhalten.
