@@ -1,9 +1,5 @@
-# trustedDialog Preview Builder - Avatar Export v2
+# trustedDialog Preview Builder - Streamlit Cloud Fix
 
-Nur der Export des hochgeladenen Avatars wurde geändert:
-- SVG bleibt in der Live-Vorschau unverändert.
-- Für den PNG-Export wird das SVG serverseitig als PNG gerastert.
-- Im Export wird das Avatarbild explizit auf 38 x 38 px gesetzt und mit `border-radius: 50%` plus `clip-path: circle(...)` rund beschnitten.
-- Das Avatarbild wird nicht mehr in ein CSS-Hintergrundbild umgewandelt.
-
-Der iPhone-Frame und der restliche Stand der bereitgestellten app.py bleiben unverändert.
+- CairoSVG wurde vollständig entfernt, damit keine native `libcairo`-Abhängigkeit benötigt wird.
+- Der Avatar bleibt beim PNG-Export 38 x 38 px und wird im Browser kreisrund geclippt.
+- Die bestehende Vorschau, der bestehende iPhone-Frame und alle übrigen Funktionen bleiben unverändert.
