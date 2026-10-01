@@ -1,5 +1,7 @@
-# trustedDialog Preview Builder - Header Alignment
+# trustedDialog Preview Builder - WiFi Fix
 
-In dieser Version wurde ausschließlich die vertikale Position der rechten Status-Icons angepasst, damit Mobilfunksignal, WLAN und Batterie optisch auf derselben horizontalen Achse wie die Uhrzeit liegen.
+Diese Version basiert auf dem zuletzt ausgerichteten Header und ändert ausschließlich das WLAN-Symbol:
+- das Zeichen `⌁` wurde entfernt,
+- stattdessen wird wieder das dreistufige iOS-ähnliche WLAN-SVG verwendet.
 
-Sonst wurden keine Layout- oder Inhaltsänderungen vorgenommen.
+Die zuletzt korrigierte vertikale Ausrichtung der rechten Status-Icons bleibt unverändert.
