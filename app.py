@@ -8,12 +8,14 @@ def uri(f):
  mime='image/svg+xml' if f.name.lower().endswith('.svg') else (f.type or 'image/png')
  return f'data:{mime};base64,'+base64.b64encode(f.getvalue()).decode()
 def e(x):return html.escape(x or '',quote=True)
-for k,v in {'sender':'Marke','subject':'Betreff','preheader':'Preview','color':'#8EA8CE'}.items():st.session_state.setdefault(k,v)
+def display_text(x):
+ return e(x[:34]+'...' if len(x)>34 else x)
+for k,v in {'sender':'','subject':'','preheader':'','color':'#8EA8CE'}.items():st.session_state.setdefault(k,v)
 st.title('trustedDialog Preview Builder');st.caption('GMX · iOS · HTML/CSS-Preview')
 l,r=st.columns([.86,1.14],gap='large')
 with l:
  st.subheader('Inhalte');st.text_input('Absender / Marke',key='sender',max_chars=37);st.text_input('Betreff',key='subject',max_chars=37);st.text_input('Preview-Text',key='preheader',max_chars=37);st.color_picker('Fallback-Avatarfarbe',key='color');af=st.file_uploader('Avatar / Logo',type=['svg','png','jpg','jpeg','webp'],help='SVG wird direkt und ohne Rasterung dargestellt.');pf=st.file_uploader('Preview-Bild 1088 × 464 px',type=['png','jpg','jpeg','webp'])
-sender,subject,pre=e(st.session_state.sender),e(st.session_state.subject),e(st.session_state.preheader)
+sender,subject,pre=display_text(st.session_state.sender),display_text(st.session_state.subject),display_text(st.session_state.preheader)
 avsrc,psrc=uri(af),uri(pf); letters=e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
 av=f'<img class="avatar" src="{avsrc}">' if avsrc else f'<span class="avatar fallback" style="background:{e(st.session_state.color)}">{letters}</span>'
 pv=f'<img class="preview" src="{psrc}">' if psrc else '<div class="preview placeholder">Bild einfügen</div>'

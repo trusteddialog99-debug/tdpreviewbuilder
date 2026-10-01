@@ -1,8 +1,8 @@
-# trustedDialog Preview Builder - 3 targeted changes
+# trustedDialog Preview Builder - Empty defaults + ellipsis
 
-Nur diese Änderungen wurden vorgenommen:
-1. GMX Magazin verwendet fest das vorgegebene GMX-Avatar-Logo.
-2. Footer enthält jetzt fünf Einträge: E-Mail, Dateien, Fotos, Mobil, News.
-3. Maximal 37 Zeichen für Absender / Marke, Betreff und Preview-Text.
+Geändert wurden nur diese Punkte:
+- Absender / Marke, Betreff und Preview-Text starten leer statt mit vorausgefüllten Werten.
+- Alle drei Eingaben erlauben weiterhin maximal 37 Zeichen.
+- Bei längeren Inhalten wird die Darstellung im Scribble auf 34 Zeichen plus `...` gekürzt.
 
-Der restliche Stand der bereitgestellten app.py wurde nicht geändert.
+Die übrigen Anpassungen der vorherigen Version bleiben unverändert.
