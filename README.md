@@ -1,5 +1,7 @@
-# trustedDialog Preview Builder - Streamlit Cloud Fix
+# trustedDialog Preview Builder - SVG Avatar to PNG Export
 
-- CairoSVG wurde vollständig entfernt, damit keine native `libcairo`-Abhängigkeit benötigt wird.
-- Der Avatar bleibt beim PNG-Export 38 x 38 px und wird im Browser kreisrund geclippt.
-- Die bestehende Vorschau, der bestehende iPhone-Frame und alle übrigen Funktionen bleiben unverändert.
+Änderung ausschließlich für den PNG-Export:
+- Ein hochgeladenes SVG-Avatar wird direkt im Browser in ein echtes kreisrundes PNG konvertiert.
+- Das PNG wird vor dem Screenshot in die Exportkopie eingesetzt.
+- Keine CairoSVG- oder Systembibliothek ist erforderlich.
+- Die Live-Vorschau, der iPhone-Frame und alle übrigen Funktionen bleiben unverändert.

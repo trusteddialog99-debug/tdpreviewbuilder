@@ -48,6 +48,29 @@ H=f'''<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.
 const p=n=>String(n).padStart(2,'0'),fmt=d=>p(d.getHours())+':'+p(d.getMinutes());
 function tick(){{let n=new Date();document.getElementById('now').textContent=fmt(n);document.querySelectorAll('[data-off]').forEach(x=>x.textContent=fmt(new Date(n.getTime()+Number(x.dataset.off)*60000)))}}
 tick();setInterval(tick,30000);
+async function avatarToCircularPng(img,size=152){{
+ return new Promise((resolve,reject)=>{{
+  const source=new Image();
+  source.onload=()=>{{
+   try{{
+    const canvas=document.createElement('canvas');
+    canvas.width=size;canvas.height=size;
+    const ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,size,size);
+    ctx.save();
+    ctx.beginPath();ctx.arc(size/2,size/2,size/2,0,Math.PI*2);ctx.clip();
+    const sw=source.naturalWidth||size,sh=source.naturalHeight||size;
+    const scale=Math.max(size/sw,size/sh);
+    const dw=sw*scale,dh=sh*scale;
+    ctx.drawImage(source,(size-dw)/2,(size-dh)/2,dw,dh);
+    ctx.restore();
+    resolve(canvas.toDataURL('image/png'));
+   }}catch(error){{reject(error)}}
+  }};
+  source.onerror=reject;
+  source.src=img.currentSrc||img.src;
+ }});
+}}
 async function downloadPreview(){{
  const button=document.querySelector('.downloadbtn');
  const phone=document.querySelector('.phone');
@@ -57,6 +80,10 @@ async function downloadPreview(){{
   if(typeof html2canvas==='undefined') throw new Error('html2canvas konnte nicht geladen werden');
   await document.fonts.ready;
   await Promise.all(Array.from(phone.querySelectorAll('img')).map(img=>img.complete ? Promise.resolve() : new Promise(resolve=>{{img.onload=resolve;img.onerror=resolve;}})));
+  const uploadedAvatar=phone.querySelector('.row.td img.avatar');
+  if(uploadedAvatar){{
+   try{{uploadedAvatar.dataset.exportPng=await avatarToCircularPng(uploadedAvatar,152)}}catch(error){{console.warn('Avatar conversion failed',error)}}
+  }}
   const canvas=await html2canvas(phone,{{
    backgroundColor:null,
    scale:2,
@@ -84,19 +111,15 @@ async function downloadPreview(){{
      }}
     }});
     doc.querySelectorAll('img.avatar').forEach(img=>{{
-     img.style.width='38px';
-     img.style.height='38px';
-     img.style.minWidth='38px';
-     img.style.minHeight='38px';
-     img.style.maxWidth='38px';
-     img.style.maxHeight='38px';
+     const originalIndex=Array.from(phone.querySelectorAll('img.avatar')).indexOf(phone.querySelectorAll('img.avatar')[Array.from(doc.querySelectorAll('img.avatar')).indexOf(img)]);
+     const original=phone.querySelectorAll('img.avatar')[originalIndex];
+     if(original && original.dataset.exportPng) img.src=original.dataset.exportPng;
+     img.style.width='38px';img.style.height='38px';
+     img.style.minWidth='38px';img.style.minHeight='38px';
+     img.style.maxWidth='38px';img.style.maxHeight='38px';
      img.style.borderRadius='50%';
-     img.style.clipPath='circle(50% at 50% 50%)';
-     img.style.webkitClipPath='circle(50% at 50% 50%)';
-     img.style.objectFit='cover';
-     img.style.objectPosition='center center';
-     img.style.display='block';
-     img.style.visibility='visible';
+     img.style.objectFit='cover';img.style.objectPosition='center center';
+     img.style.display='block';img.style.visibility='visible';
     }});
    }}
   }});
