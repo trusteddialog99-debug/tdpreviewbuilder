@@ -55,6 +55,8 @@ async function downloadPreview(){{
  try{{
   button.disabled=true;button.textContent='PNG wird erstellt…';
   if(typeof html2canvas==='undefined') throw new Error('html2canvas konnte nicht geladen werden');
+  await document.fonts.ready;
+  await Promise.all(Array.from(phone.querySelectorAll('img')).map(img=>img.complete ? Promise.resolve() : new Promise(resolve=>{{img.onload=resolve;img.onerror=resolve;}})));
   const canvas=await html2canvas(phone,{{
    backgroundColor:null,
    scale:2,
@@ -63,8 +65,39 @@ async function downloadPreview(){{
    logging:false,
    width:390,
    height:780,
-   windowWidth:390,
-   windowHeight:780
+   scrollX:0,
+   scrollY:0,
+   onclone:(doc)=>{{
+    const clonedPhone=doc.querySelector('.phone');
+    clonedPhone.style.background='#111';
+    clonedPhone.style.border='2px solid #777';
+    clonedPhone.style.boxShadow='inset 0 0 0 2px #d4d4d4';
+    clonedPhone.style.opacity='1';
+    doc.querySelectorAll('img.preview').forEach(img=>{{
+     const wrap=img.closest('.pwrap');
+     if(wrap){{
+      wrap.style.backgroundImage='url("'+img.src+'")';
+      wrap.style.backgroundSize='cover';
+      wrap.style.backgroundPosition='center center';
+      wrap.style.backgroundRepeat='no-repeat';
+      img.style.visibility='hidden';
+     }}
+    }});
+    doc.querySelectorAll('img.avatar').forEach(img=>{{
+     const holder=img.parentElement;
+     if(holder){{
+      holder.style.width='38px';
+      holder.style.height='38px';
+      holder.style.borderRadius='50%';
+      holder.style.backgroundImage='url("'+img.src+'")';
+      holder.style.backgroundSize='cover';
+      holder.style.backgroundPosition='center center';
+      holder.style.backgroundRepeat='no-repeat';
+      holder.style.overflow='hidden';
+      img.style.visibility='hidden';
+     }}
+    }});
+   }}
   }});
   const rawSender={download_sender};
   const safeSender=String(rawSender).trim().replace(/[\\/:*?"<>|]+/g,'_')||'Absender';
