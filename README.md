@@ -1,7 +1,10 @@
-# trustedDialog Preview Builder - SVG Avatar to PNG Export
+# trustedDialog Preview Builder - SVG sofort zu PNG
 
-Änderung ausschließlich für den PNG-Export:
-- Ein hochgeladenes SVG-Avatar wird direkt im Browser in ein echtes kreisrundes PNG konvertiert.
-- Das PNG wird vor dem Screenshot in die Exportkopie eingesetzt.
-- Keine CairoSVG- oder Systembibliothek ist erforderlich.
-- Die Live-Vorschau, der iPhone-Frame und alle übrigen Funktionen bleiben unverändert.
+Nur die Avatar-Pipeline wurde geändert:
+- SVG kann weiterhin im Upload gewählt werden.
+- Direkt nach dem Laden der Vorschau wird ein hochgeladenes SVG im Browser auf Canvas gerendert und in ein PNG umgewandelt.
+- Danach verwendet die Vorschau dieses PNG weiter.
+- Der spätere GMX-PNG-Export verwendet damit ebenfalls nur noch das bereits konvertierte PNG.
+- Keine CairoSVG-/libcairo-Abhängigkeit.
+
+Alle übrigen Layout- und Exportfunktionen bleiben unverändert.
