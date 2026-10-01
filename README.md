@@ -1,9 +1,8 @@
-# trustedDialog Preview Builder - Preview Export Exact Crop
+# trustedDialog Preview Builder - exact merge
 
-Nur die Preview-Grafik beim PNG-Export wurde geändert:
-- Vor dem Export wird das hochgeladene Preview-Bild im Browser mit derselben `cover`-Logik wie die Live-Vorschau zugeschnitten.
-- Daraus wird ein hochauflösendes PNG mit 1012 × 384 px erzeugt, exakt 4x der sichtbaren 253 × 96 px Fläche.
-- Dieses bereits korrekt zugeschnittene PNG wird anschließend ohne weitere Skalierungslogik in den Export eingesetzt.
-- Dadurch bleibt der Bildausschnitt wie in der Vorschau und wird nicht verzogen.
+Basis: bereitgestellte `app.py`.
 
-Die funktionierende Avatar-Verarbeitung bleibt unverändert.
+- Die funktionierende Avatar-Verarbeitung aus `app.py` bleibt unverändert.
+- Ausschließlich der Exportblock für `img.preview` wurde 1:1 aus `app1.py` übernommen.
+- Die Exportskalierung wurde entsprechend `app1.py` auf 2 gesetzt.
+- Sonstige Inhalte und Layoutwerte stammen weiterhin aus `app.py`.
