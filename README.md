@@ -1,10 +1,12 @@
 # trustedDialog Preview Builder - GitHub Version
 
-Änderung in dieser Version:
-- Nicht-trustedDialog Fallback-Avatare verwenden Hintergrund `#b8ddfd` und Schriftfarbe `#1375d7`.
-- trustedDialog Kundenavatar und GMX Magazin bleiben unverändert.
+Aktualisiert gegenüber der letzten Version:
+- WLAN wird als dreistufiges SVG-Signal dargestellt.
+- Das rechte Header-Icon ist ein Compose-/Neue-E-Mail-Symbol mit Stift und Quadrat.
+- Batterieanzeige zeigt `85` in einem schwarzen, abgerundeten Batterieelement mit grauem Batteriepol.
+- Die bereits korrigierten Nicht-trustedDialog-Avatarfarben bleiben erhalten: `#b8ddfd` / `#1375d7`.
 
-Dateien direkt ins GitHub-Hauptverzeichnis hochladen:
+GitHub:
 - `app.py`
 - `requirements.txt`
 - `README.md`
