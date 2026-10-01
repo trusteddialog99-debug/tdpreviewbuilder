@@ -1,4 +1,6 @@
 import base64, html, json
+from io import BytesIO
+import cairosvg
 from urllib.request import Request, urlopen
 import streamlit as st
 import streamlit.components.v1 as components
@@ -21,6 +23,15 @@ def uri(f):
  if not f:return ''
  mime='image/svg+xml' if f.name.lower().endswith('.svg') else (f.type or 'image/png')
  return f'data:{mime};base64,'+base64.b64encode(f.getvalue()).decode()
+def export_avatar_uri(f):
+ if not f:return ''
+ if f.name.lower().endswith('.svg'):
+  try:
+   png=cairosvg.svg2png(bytestring=f.getvalue(),output_width=256,output_height=256)
+   return 'data:image/png;base64,'+base64.b64encode(png).decode()
+  except Exception:
+   return uri(f)
+ return uri(f)
 def e(x):return html.escape(x or '',quote=True)
 def display_text(x):
  return e(x[:34]+'...' if len(x)>34 else x)
@@ -31,8 +42,8 @@ with l:
  st.subheader('Inhalte');st.text_input('Absender / Marke',key='sender',max_chars=37);st.text_input('Betreff',key='subject',max_chars=37);st.text_input('Preview-Text',key='preheader',max_chars=37);st.color_picker('Fallback-Avatarfarbe',key='color');af=st.file_uploader('Avatar / Logo',type=['svg','png','jpg','jpeg','webp'],help='SVG wird direkt und ohne Rasterung dargestellt.');pf=st.file_uploader('Preview-Bild 1088 × 464 px',type=['png','jpg','jpeg','webp'])
 sender,subject,pre=display_text(st.session_state.sender),display_text(st.session_state.subject),display_text(st.session_state.preheader)
 download_sender=json.dumps(st.session_state.sender or 'Absender',ensure_ascii=False)
-avsrc,psrc=uri(af),uri(pf); letters=e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
-av=f'<img class="avatar" src="{avsrc}">' if avsrc else f'<span class="avatar fallback" style="background:#b8ddfd;color:#1375d7">{letters}</span>'
+avsrc,psrc=uri(af),uri(pf); avexport=export_avatar_uri(af); letters=e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
+av=f'<img class="avatar" src="{avsrc}" data-export-src="{avexport}">' if avsrc else f'<span class="avatar fallback" style="background:#b8ddfd;color:#1375d7">{letters}</span>'
 pv=f'<img class="preview" src="{psrc}">' if psrc else '<div class="preview placeholder">Bild einfügen</div>'
 seal=f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">'
 H=f'''<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script><style>
@@ -84,9 +95,8 @@ async function downloadPreview(){{
      }}
     }});
     doc.querySelectorAll('img.avatar').forEach(img=>{{
-     // Keep the real IMG element for export. html2canvas handles the same
-     // border-radius/object-fit rules as the live preview more faithfully
-     // than converting the avatar into a background image.
+     const exportSrc=img.getAttribute('data-export-src');
+     if(exportSrc) img.src=exportSrc;
      img.style.width='38px';
      img.style.height='38px';
      img.style.minWidth='38px';
@@ -94,10 +104,11 @@ async function downloadPreview(){{
      img.style.maxWidth='38px';
      img.style.maxHeight='38px';
      img.style.borderRadius='50%';
+     img.style.clipPath='circle(50% at 50% 50%)';
+     img.style.webkitClipPath='circle(50% at 50% 50%)';
      img.style.objectFit='cover';
      img.style.objectPosition='center center';
      img.style.display='block';
-     img.style.overflow='hidden';
      img.style.visibility='visible';
     }});
    }}
