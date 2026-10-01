@@ -1,7 +1,10 @@
-# trustedDialog Preview Builder - First Avatar Exact Color Fix
+# trustedDialog Preview Builder - PNG-Download
 
-Nur der Fallback-Avatar der ersten Mail wurde korrigiert. Er verwendet jetzt exakt dieselbe Inline-Darstellung wie OH/SW/FF:
-- Hintergrund `#b8ddfd`
-- Schrift `#1375d7`
+Neu in dieser Version:
+- Die vollständig dargestellte GMX-Smartphone-Vorschau kann als PNG heruntergeladen werden.
+- Der Dateiname lautet `GMX_trustedDialogPreview_[Absender].png`.
+- `[Absender]` wird aus dem Feld **Absender / Marke** übernommen.
+- Unzulässige Dateinamenzeichen werden durch `_` ersetzt.
+- Der Export erfolgt in doppelter Auflösung für eine schärfere PNG-Datei.
 
-Ein hochgeladenes Avatar-/SVG-Logo bleibt davon unberührt.
+Alle übrigen Inhalte und Layout-Einstellungen der bereitgestellten `app.py` bleiben erhalten.
