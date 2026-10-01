@@ -1,8 +1,16 @@
-# trustedDialog Preview Builder - Export Fidelity Fix
+# trustedDialog Preview Builder - Avatar + iPhone Frame Fix
 
-Nur der PNG-Export wurde angepasst:
-- Hochgeladene Avatar- und Preview-Grafiken werden im Export mit derselben `cover`-Logik wie in der Vorschau gerendert.
-- Vor dem Export wird auf das vollständige Laden von Schriften und Bildern gewartet.
-- Der iPhone-Rahmen wird im Export wieder mit schwarzem Grundkörper und grauen Konturen gerendert.
+Es wurden ausschließlich diese beiden Punkte angepasst:
 
-Die sichtbare Live-Vorschau und alle übrigen Funktionen bleiben unverändert.
+1. **Avatar-Logo**
+   - bleibt rund maskiert,
+   - wird mit `contain` statt `cover` dargestellt,
+   - wird dadurch weder in der Vorschau noch beim PNG-Export abgeschnitten.
+
+2. **iPhone-Frame**
+   - dunkler/schwarzer Grundrahmen,
+   - metallisch graue Außen- und Innenkanten,
+   - zusätzliche seitliche Hardware-Konturen,
+   - dieselbe Frame-Darstellung wird auch beim PNG-Export erzwungen.
+
+Alle übrigen Funktionen und Layoutwerte bleiben unverändert.
