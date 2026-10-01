@@ -1,7 +1,7 @@
-# trustedDialog Preview Builder - First avatar color update
+# trustedDialog Preview Builder - First Avatar Exact Color Fix
 
-Nur die Fallback-Darstellung des Avatars der ersten Mail wurde angepasst:
-- Hintergrund: `#b8ddfd`
-- Schrift: `#1375d7`
+Nur der Fallback-Avatar der ersten Mail wurde korrigiert. Er verwendet jetzt exakt dieselbe Inline-Darstellung wie OH/SW/FF:
+- Hintergrund `#b8ddfd`
+- Schrift `#1375d7`
 
-Alle übrigen Funktionen und Layouts bleiben unverändert.
+Ein hochgeladenes Avatar-/SVG-Logo bleibt davon unberührt.

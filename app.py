@@ -17,7 +17,7 @@ with l:
  st.subheader('Inhalte');st.text_input('Absender / Marke',key='sender',max_chars=37);st.text_input('Betreff',key='subject',max_chars=37);st.text_input('Preview-Text',key='preheader',max_chars=37);st.color_picker('Fallback-Avatarfarbe',key='color');af=st.file_uploader('Avatar / Logo',type=['svg','png','jpg','jpeg','webp'],help='SVG wird direkt und ohne Rasterung dargestellt.');pf=st.file_uploader('Preview-Bild 1088 × 464 px',type=['png','jpg','jpeg','webp'])
 sender,subject,pre=display_text(st.session_state.sender),display_text(st.session_state.subject),display_text(st.session_state.preheader)
 avsrc,psrc=uri(af),uri(pf); letters=e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
-av=f'<img class="avatar" src="{avsrc}">' if avsrc else f'<span class="avatar fallback" style="background:{e(st.session_state.color)}">{letters}</span>'
+av=f'<img class="avatar" src="{avsrc}">' if avsrc else f'<span class="avatar fallback" style="background:#b8ddfd;color:#1375d7">{letters}</span>'
 pv=f'<img class="preview" src="{psrc}">' if psrc else '<div class="preview placeholder">Bild einfügen</div>'
 seal=f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">'
 H=f'''<!doctype html><html><head><meta charset="utf-8"><style>
