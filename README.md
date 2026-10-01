@@ -1,10 +1,10 @@
-# trustedDialog Preview Builder - PNG-Download
+# trustedDialog Preview Builder - PNG Download Fix
 
-Neu in dieser Version:
-- Die vollständig dargestellte GMX-Smartphone-Vorschau kann als PNG heruntergeladen werden.
-- Der Dateiname lautet `GMX_trustedDialogPreview_[Absender].png`.
-- `[Absender]` wird aus dem Feld **Absender / Marke** übernommen.
-- Unzulässige Dateinamenzeichen werden durch `_` ersetzt.
-- Der Export erfolgt in doppelter Auflösung für eine schärfere PNG-Datei.
+Die PNG-Downloadfunktion wurde technisch umgestellt:
+- Browser-Rendering jetzt mit `html2canvas` statt SVG `foreignObject`.
+- Exportiert wird weiterhin ausschließlich die GMX-Smartphone-Vorschau.
+- Exportauflösung: 2x.
+- Dateiname: `GMX_trustedDialogPreview_[Absender].png`.
+- Der Absender stammt weiterhin aus dem Feld **Absender / Marke**.
 
-Alle übrigen Inhalte und Layout-Einstellungen der bereitgestellten `app.py` bleiben erhalten.
+Die bestehende Vorschau und deren Inhalte wurden nicht verändert.
