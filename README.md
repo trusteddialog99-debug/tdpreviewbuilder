@@ -1,10 +1,9 @@
-# trustedDialog Preview Builder - SVG sofort zu PNG
+# trustedDialog Preview Builder - Preview Image Export Quality
 
-Nur die Avatar-Pipeline wurde geändert:
-- SVG kann weiterhin im Upload gewählt werden.
-- Direkt nach dem Laden der Vorschau wird ein hochgeladenes SVG im Browser auf Canvas gerendert und in ein PNG umgewandelt.
-- Danach verwendet die Vorschau dieses PNG weiter.
-- Der spätere GMX-PNG-Export verwendet damit ebenfalls nur noch das bereits konvertierte PNG.
-- Keine CairoSVG-/libcairo-Abhängigkeit.
+Nur der Export des hochgeladenen Preview-Bildes wurde angepasst:
+- Das hochgeladene PNG bleibt beim Export ein echtes `<img>`-Element.
+- Es wird nicht mehr in ein CSS-Hintergrundbild umgewandelt.
+- Größe, `object-fit: cover`, Bildposition und Rundung entsprechen der Live-Vorschau.
+- Der PNG-Export erfolgt in 3-facher Auflösung für eine sauberere Darstellung.
 
-Alle übrigen Layout- und Exportfunktionen bleiben unverändert.
+Die bestehende SVG-Avatar-zu-PNG-Konvertierung wurde unverändert beibehalten.
