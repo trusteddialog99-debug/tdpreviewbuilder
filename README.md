@@ -1,8 +1,7 @@
-# trustedDialog Preview Builder - Statusbar Ratio Update
+# trustedDialog Preview Builder - Spacing Update
 
-Änderung dieser Version:
-- Uhrzeit links deutlich kleiner und proportional näher an der iOS-Referenz.
-- Mobilfunksignal, WLAN und Batterie ebenfalls verkleinert.
-- Engerer Abstand zwischen den rechten Status-Icons.
-- Batterie kompakter, inklusive grauem Batteriepol.
-- Dynamic Island und alle bisherigen trustedDialog-/Avatar-/Footer-Anpassungen bleiben unverändert.
+Diese Version ändert bewusst nur:
+- den vertikalen Abstand innerhalb der ersten trustedDialog-Mail: Preview-Text näher am Preview-Bild und Preview-Bild näher an der folgenden Mail,
+- eine zusätzliche fünfte Inbox-Mail am Ende: FF / Fred Fritt / Klassentreffen.
+
+Alle übrigen bestehenden Elemente bleiben unverändert.
