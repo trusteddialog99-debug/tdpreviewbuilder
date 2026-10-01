@@ -1,7 +1,8 @@
-# trustedDialog Preview Builder - WiFi Fix
+# trustedDialog Preview Builder - 3 targeted changes
 
-Diese Version basiert auf dem zuletzt ausgerichteten Header und ändert ausschließlich das WLAN-Symbol:
-- das Zeichen `⌁` wurde entfernt,
-- stattdessen wird wieder das dreistufige iOS-ähnliche WLAN-SVG verwendet.
+Nur diese Änderungen wurden vorgenommen:
+1. GMX Magazin verwendet fest das vorgegebene GMX-Avatar-Logo.
+2. Footer enthält jetzt fünf Einträge: E-Mail, Dateien, Fotos, Mobil, News.
+3. Maximal 37 Zeichen für Absender / Marke, Betreff und Preview-Text.
 
-Die zuletzt korrigierte vertikale Ausrichtung der rechten Status-Icons bleibt unverändert.
+Der restliche Stand der bereitgestellten app.py wurde nicht geändert.
