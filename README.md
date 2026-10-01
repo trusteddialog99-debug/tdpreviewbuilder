@@ -1,11 +1,9 @@
-# trustedDialog Preview Builder - Corrected Preview Export
+# trustedDialog Preview Builder - Preview Export Exact Crop
 
-Diese Version basiert auf dem funktionierenden Stand mit direkter SVG-zu-PNG-Konvertierung beim Avatar-Upload.
+Nur die Preview-Grafik beim PNG-Export wurde geändert:
+- Vor dem Export wird das hochgeladene Preview-Bild im Browser mit derselben `cover`-Logik wie die Live-Vorschau zugeschnitten.
+- Daraus wird ein hochauflösendes PNG mit 1012 × 384 px erzeugt, exakt 4x der sichtbaren 253 × 96 px Fläche.
+- Dieses bereits korrekt zugeschnittene PNG wird anschließend ohne weitere Skalierungslogik in den Export eingesetzt.
+- Dadurch bleibt der Bildausschnitt wie in der Vorschau und wird nicht verzogen.
 
-Geändert wurde ausschließlich der Export des Preview-Bildes:
-- Das Preview-Bild wird im Export nicht mehr verändert, ersetzt oder neu dimensioniert.
-- `html2canvas` übernimmt exakt das Bild-Element aus der Live-Vorschau.
-- Dadurch bleiben Größe, Ausschnitt, Rundung und Position identisch zur Vorschau.
-- Die Exportauflösung wurde auf 3x erhöht, ohne die CSS-Geometrie zu verändern.
-
-Die funktionierende SVG-zu-PNG-Konvertierung des Avatars bleibt unverändert erhalten.
+Die funktionierende Avatar-Verarbeitung bleibt unverändert.
