@@ -1,5 +1,9 @@
-import base64, html, json
+import base64, html, json, io, re, socket, ipaddress
+from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
+import requests
+from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageColor
 import streamlit as st
 import streamlit.components.v1 as components
 st.set_page_config(page_title='trustedDialog Preview Builder',page_icon='✉️',layout='wide')
@@ -24,14 +28,208 @@ def uri(f):
 def e(x):return html.escape(x or '',quote=True)
 def display_text(x):
  return e(x[:34]+'...' if len(x)>34 else x)
-for k,v in {'sender':'Absender','subject':'Betreff','preheader':'Preview-Text','color':'#b8ddfd'}.items():st.session_state.setdefault(k,v)
-st.title('trustedDialog Preview Builder');st.caption('GMX · iOS · HTML/CSS-Preview')
+
+UA='Mozilla/5.0 (compatible; trustedDialog-Preview-Builder/1.0)'
+PREVIEW_SIZE=(1088,464)
+
+def normalize_domain(value):
+ value=(value or '').strip()
+ if value and not value.startswith(('http://','https://')): value='https://'+value
+ return value
+
+def public_url(value):
+ try:
+  parsed=urlparse(value)
+  if parsed.scheme not in ('http','https') or not parsed.hostname:return False
+  for answer in socket.getaddrinfo(parsed.hostname,parsed.port or 443,type=socket.SOCK_STREAM):
+   ip=ipaddress.ip_address(answer[4][0])
+   if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:return False
+  return True
+ except Exception:return False
+
+def safe_fetch(value,max_bytes=7000000):
+ if not public_url(value):raise ValueError('Die Domain ist nicht öffentlich erreichbar oder wurde aus Sicherheitsgründen blockiert.')
+ with requests.get(value,headers={'User-Agent':UA},timeout=12,stream=True,allow_redirects=True) as response:
+  response.raise_for_status()
+  if not public_url(response.url):raise ValueError('Die Weiterleitung wurde blockiert.')
+  data=bytearray()
+  for chunk in response.iter_content(65536):
+   data.extend(chunk)
+   if len(data)>max_bytes:raise ValueError('Die abgerufene Datei ist zu groß.')
+  return bytes(data),response.url,response.headers.get('content-type','')
+
+def meta(soup,*keys):
+ for key in keys:
+  node=soup.find('meta',attrs={'property':key}) or soup.find('meta',attrs={'name':key})
+  if node and node.get('content'):return node['content'].strip()
+ return ''
+
+def unique(values):
+ out=[];seen=set()
+ for value in values:
+  if value and value not in seen:seen.add(value);out.append(value)
+ return out
+
+def short(value,limit=37):
+ value=re.sub(r'\s+',' ',value or '').strip()
+ return value if len(value)<=limit else value[:limit-3].rstrip()+'...'
+
+def analyze_site(value):
+ raw,final_url,content_type=safe_fetch(normalize_domain(value),3000000)
+ soup=BeautifulSoup(raw,'html.parser')
+ title=meta(soup,'og:site_name') or (soup.title.get_text(' ',strip=True) if soup.title else '')
+ host=(urlparse(final_url).hostname or '').replace('www.','')
+ brand=re.split(r'\s*[|–—]\s*',title)[0].strip() if title else host.split('.')[0]
+ brand=re.sub(r'\s+-\s+.*$','',brand).strip() or host
+ description=meta(soup,'og:description','description')
+ body_text=' '.join(soup.stripped_strings)
+ offers=[]
+ patterns=[r'\b\d{1,2}\s?%\s*(?:Rabatt|sparen|off)?\b',r'\b\d+(?:[,.]\d{1,2})?\s?€\s*(?:Rabatt|Gutschein|sparen)?\b',r'\b(?:Willkommensrabatt|Gratis Versand|kostenloser Versand|Sale|Gutschein|Rabatt)\b[^.!?]{0,65}']
+ for pattern in patterns:offers.extend(re.findall(pattern,body_text,flags=re.I))
+ offers=unique([re.sub(r'\s+',' ',x).strip(' -|') for x in offers])[:8]
+ theme=meta(soup,'theme-color')
+ colors=[]
+ if theme:colors.append(theme)
+ for source in [str(soup)[:350000]]:
+  colors.extend(re.findall(r'#[0-9a-fA-F]{6}\b',source))
+ colors=unique(colors)[:12]
+ images=[];logos=[]
+ og=meta(soup,'og:image','twitter:image')
+ if og:images.append(urljoin(final_url,og))
+ for tag in soup.find_all('img'):
+  src=tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src')
+  if not src:continue
+  src=urljoin(final_url,src)
+  marker=(' '.join(tag.get('class',[]))+' '+tag.get('id','')+' '+tag.get('alt','')).lower()
+  if 'logo' in marker:logos.append(src)
+  elif not src.lower().split('?')[0].endswith(('.svg','.gif')):
+   score=0
+   if any(word in marker for word in ('hero','banner','stage','campaign','teaser')):score+=5
+   try:
+    width=int(str(tag.get('width','0')).replace('px',''));height=int(str(tag.get('height','0')).replace('px',''))
+    if width>=600:score+=3
+    if width and height and width/height>1.5:score+=2
+   except Exception:pass
+   images.append((score,src))
+ for link in soup.find_all('link'):
+  rel=' '.join(link.get('rel',[])).lower()
+  if any(x in rel for x in ('icon','apple-touch-icon')) and link.get('href'):logos.append(urljoin(final_url,link['href']))
+ images=unique([x[1] for x in sorted(images,key=lambda item:item[0],reverse=True)])[:10]
+ logos=unique(logos)[:8]
+ offer=offers[0] if offers else ''
+ if offer:
+  subject=short(('Jetzt '+offer+' sichern') if len(offer)<26 else offer)
+  preheader=short('Angebot jetzt entdecken')
+ else:
+  subject=short('Neuigkeiten von '+brand)
+  preheader=short('Jetzt Vorteile entdecken')
+ return {'url':final_url,'brand':short(brand),'description':description,'offers':offers,'colors':colors,'images':images,'logos':logos,'subject':subject,'preheader':preheader}
+
+def image_from_url(value):
+ raw,_,_=safe_fetch(value,9000000)
+ image=Image.open(io.BytesIO(raw));image.load();return image.convert('RGB')
+
+def font(size,bold=False):
+ paths=['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf','/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf']
+ for path in paths:
+  try:return ImageFont.truetype(path,size)
+  except OSError:pass
+ return ImageFont.load_default()
+
+def generate_preview(source,headline,brand_color='#1375d7'):
+ base=ImageOps.fit(source.convert('RGB'),PREVIEW_SIZE,Image.Resampling.LANCZOS,centering=(.5,.5)).convert('RGBA')
+ overlay=Image.new('RGBA',PREVIEW_SIZE,(0,0,0,0));od=ImageDraw.Draw(overlay)
+ for x in range(610):
+  alpha=int(155*(1-x/610)**1.5);od.line((x,0,x,464),fill=(0,0,0,alpha))
+ base=Image.alpha_composite(base,overlay);d=ImageDraw.Draw(base)
+ words=(headline or 'Jetzt entdecken').split();lines=[];line=''
+ f=font(51,True)
+ for word in words:
+  candidate=(line+' '+word).strip()
+  if d.textlength(candidate,font=f)>470 and line:lines.append(line);line=word
+  else:line=candidate
+ if line:lines.append(line)
+ y=112
+ for text in lines[:3]:d.text((58,y),text,font=f,fill='white',stroke_width=1,stroke_fill=(0,0,0,80));y+=62
+ cta='Jetzt entdecken';cf=font(27,True);tw=d.textlength(cta,font=cf)
+ try:fill=ImageColor.getrgb(brand_color)
+ except Exception:fill=(19,117,215)
+ d.rounded_rectangle((58,343,58+tw+52,407),radius=18,fill=fill)
+ d.text((84,357),cta,font=cf,fill='white')
+ return base.convert('RGB')
+
+def png_data(image):
+ buffer=io.BytesIO();image.save(buffer,'PNG',optimize=False);return buffer.getvalue()
+
+for k,v in {'domain':'','sender':'Absender','subject':'Betreff','preheader':'Preview-Text','color':'#b8ddfd','analysis':None,'generated_preview':None,'generated_avatar':'','selected_image':''}.items():st.session_state.setdefault(k,v)
+st.title('trustedDialog Preview Builder')
+st.caption('Domain eingeben, Vorschläge automatisch erstellen und anschließend direkt bearbeiten.')
+
+st.subheader('1. Unternehmen analysieren')
+d1,d2=st.columns([4,1])
+with d1:st.text_input('Für welche Domain soll das trustedDialog Preview generiert werden?',key='domain',placeholder='z. B. www.beispiel.de')
+with d2:
+ st.write('');st.write('')
+ analyze_clicked=st.button('Vorschläge erstellen',type='primary',use_container_width=True)
+if analyze_clicked:
+ try:
+  with st.spinner('Website wird analysiert und die Preview vorbereitet …'):
+   result=analyze_site(st.session_state.domain)
+   st.session_state.analysis=result
+   st.session_state.sender=result['brand']
+   st.session_state.subject=result['subject']
+   st.session_state.preheader=result['preheader']
+   if result['colors']:st.session_state.brand_color=result['colors'][0]
+   else:st.session_state.brand_color='#1375d7'
+   selected=None;selected_url=''
+   for candidate in result['images']:
+    try:selected=image_from_url(candidate);selected_url=candidate;break
+    except Exception:continue
+   if selected is not None:
+    st.session_state.selected_image=selected_url
+    st.session_state.generated_preview=png_data(generate_preview(selected,result['subject'],st.session_state.brand_color))
+   else:st.session_state.generated_preview=None
+   for logo in result['logos']:
+    try:
+     raw,_,content_type=safe_fetch(logo,3000000)
+     st.session_state.generated_avatar='data:'+(content_type or 'image/png')+';base64,'+base64.b64encode(raw).decode();break
+    except Exception:continue
+  st.success('Vorschläge wurden erstellt. Alle Inhalte können unten überschrieben werden.')
+ except Exception as error:st.error(f'Die Website konnte nicht analysiert werden: {error}')
+
+analysis=st.session_state.analysis
+if analysis:
+ with st.expander('Erkannte Website-Informationen',expanded=False):
+  st.write(f"**Marke:** {analysis['brand']}")
+  if analysis['offers']:st.write('**Gefundene Angebots-Hinweise:** '+' · '.join(analysis['offers'][:5]))
+  if analysis['description']:st.write('**Beschreibung:** '+analysis['description'][:350])
+  st.caption('Bitte prüfen Sie die vorgeschlagenen Inhalte und stellen Sie sicher, dass die erforderlichen Bild- und Markenrechte vorliegen.')
+ if analysis['images']:
+  choices=analysis['images']
+  chosen=st.selectbox('Alternatives Website-Motiv',choices,index=choices.index(st.session_state.selected_image) if st.session_state.selected_image in choices else 0,format_func=lambda x:x.split('/')[-1][:70] or x)
+  if st.button('Ausgewähltes Motiv übernehmen'):
+   try:
+    img=image_from_url(chosen);st.session_state.selected_image=chosen
+    st.session_state.generated_preview=png_data(generate_preview(img,st.session_state.subject,st.session_state.get('brand_color','#1375d7')))
+    st.rerun()
+   except Exception as error:st.error(f'Das Bild konnte nicht übernommen werden: {error}')
+
+st.subheader('2. Inhalte bearbeiten')
 l,r=st.columns([.86,1.14],gap='large')
 with l:
- st.subheader('Inhalte');st.text_input('Absender / Marke',key='sender',max_chars=37);st.text_input('Betreff',key='subject',max_chars=37);st.text_input('Preview-Text',key='preheader',max_chars=37);st.color_picker('Fallback-Avatarfarbe',key='color');af=st.file_uploader('Avatar / Logo',type=['svg','png','jpg','jpeg','webp'],help='SVG wird direkt nach dem Upload im Browser in PNG konvertiert und anschließend nur noch als PNG verwendet.');pf=st.file_uploader('Preview-Bild 1088 × 464 px',type=['png','jpg','jpeg','webp'])
+ st.text_input('Absender / Marke',key='sender',max_chars=37)
+ st.text_input('Betreff',key='subject',max_chars=37)
+ st.text_input('Preview-Text',key='preheader',max_chars=37)
+ st.color_picker('Fallback-Avatarfarbe',key='color')
+ af=st.file_uploader('Avatar / Logo überschreiben',type=['svg','png','jpg','jpeg','webp'],help='SVG wird direkt nach dem Upload im Browser in PNG konvertiert und anschließend nur noch als PNG verwendet.')
+ pf=st.file_uploader('Preview-Bild überschreiben (1088 × 464 px)',type=['png','jpg','jpeg','webp'])
+ if st.session_state.generated_preview:
+  st.download_button('Generiertes Preview-Bild herunterladen',st.session_state.generated_preview,file_name=f"trustedDialog_Preview_{re.sub(r'[^A-Za-z0-9._-]+','_',st.session_state.sender)}_1088x464.png",mime='image/png',use_container_width=True)
 sender,subject,pre=display_text(st.session_state.sender),display_text(st.session_state.subject),display_text(st.session_state.preheader)
 download_sender=json.dumps(st.session_state.sender or 'Absender',ensure_ascii=False)
-avsrc,psrc=uri(af),uri(pf); letters=e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
+avsrc=uri(af) if af else st.session_state.generated_avatar
+psrc=uri(pf) if pf else ('data:image/png;base64,'+base64.b64encode(st.session_state.generated_preview).decode() if st.session_state.generated_preview else '')
+letters=e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
 av=f'<img class="avatar" id="uploaded-avatar" data-is-svg="{str(bool(af and af.name.lower().endswith(".svg"))).lower()}" src="{avsrc}">' if avsrc else f'<span class="avatar fallback" style="background:#b8ddfd;color:#1375d7">{letters}</span>'
 pv=f'<img class="preview" src="{psrc}">' if psrc else '<div class="preview placeholder">Bild einfügen</div>'
 seal=f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">'
@@ -126,5 +324,5 @@ async function downloadPreview(){{
 }}
 </script></body></html>'''
 with r:
- st.subheader('GMX Live-Vorschau');st.caption('Smartphone · GMX.DE · iOS');components.html(H,height=860,scrolling=False)
+ st.subheader('3. GMX Live-Vorschau');st.caption('Smartphone · GMX.DE · iOS');components.html(H,height=860,scrolling=False)
 st.caption('Echtes trustedDialog SVG-Siegel · SVG-Avatar-Upload · Live-Zeit mit früheren Mailzeiten · korrigierter Vier-Punkte-Footer')
