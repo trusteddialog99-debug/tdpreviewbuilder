@@ -136,27 +136,90 @@ def font(size,bold=False):
   except OSError:pass
  return ImageFont.load_default()
 
+def readable_color(rgb):
+ # Returns black or white according to WCAG-style relative luminance.
+ r,g,b=[value/255 for value in rgb]
+ lum=.2126*r+.7152*g+.0722*b
+ return '#111111' if lum>.56 else '#ffffff'
+
+def safe_brand_rgb(value):
+ try:
+  rgb=ImageColor.getrgb(value)
+  if len(rgb)==4:rgb=rgb[:3]
+  return rgb
+ except Exception:return (19,117,215)
+
+def campaign_message(headline):
+ """Reduce website wording to one dominant message and one short CTA."""
+ text=re.sub(r'\s+',' ',headline or '').strip()
+ percent=re.search(r'(?<!\d)(\d{1,2})\s?%',text)
+ euro=re.search(r'(?<!\d)(\d+(?:[,.]\d{1,2})?)\s?€',text)
+ urgent=next((word for word in ('Nur heute','Letzte Chance','Endet morgen') if word.lower() in text.lower()),'')
+ if percent:
+  value=percent.group(1)+' %'
+  return urgent.upper() if urgent else 'BIS ZU',value,'SPAREN','JETZT SHOPPEN'
+ if euro:
+  value=euro.group(1)+' €'
+  return urgent.upper() if urgent else 'JETZT',value,'SPAREN','ANGEBOT SICHERN'
+ cleaned=re.sub(r'\b(jetzt|entdecken|sichern|shoppen|kaufen|angebot)\b','',text,flags=re.I)
+ cleaned=re.sub(r'\s+',' ',cleaned).strip(' -–—!')
+ words=cleaned.split()
+ dominant=' '.join(words[:4]).upper() if words else 'NEU ENTDECKEN'
+ return '',dominant,'','JETZT ENTDECKEN'
+
+def fit_font(draw,text,max_width,start_size,min_size=25,bold=True):
+ size=start_size
+ while size>=min_size:
+  candidate=font(size,bold)
+  if draw.textlength(text,font=candidate)<=max_width:return candidate
+  size-=2
+ return font(min_size,bold)
+
 def generate_preview(source,headline,brand_color='#1375d7'):
- base=ImageOps.fit(source.convert('RGB'),PREVIEW_SIZE,Image.Resampling.LANCZOS,centering=(.5,.5)).convert('RGBA')
- overlay=Image.new('RGBA',PREVIEW_SIZE,(0,0,0,0));od=ImageDraw.Draw(overlay)
- for x in range(610):
-  alpha=int(155*(1-x/610)**1.5);od.line((x,0,x,464),fill=(0,0,0,alpha))
- base=Image.alpha_composite(base,overlay);d=ImageDraw.Draw(base)
- words=(headline or 'Jetzt entdecken').split();lines=[];line=''
- f=font(51,True)
- for word in words:
-  candidate=(line+' '+word).strip()
-  if d.textlength(candidate,font=f)>470 and line:lines.append(line);line=word
-  else:line=candidate
- if line:lines.append(line)
- y=112
- for text in lines[:3]:d.text((58,y),text,font=f,fill='white',stroke_width=1,stroke_fill=(0,0,0,80));y+=62
- cta='Jetzt entdecken';cf=font(27,True);tw=d.textlength(cta,font=cf)
- try:fill=ImageColor.getrgb(brand_color)
- except Exception:fill=(19,117,215)
- d.rounded_rectangle((58,343,58+tw+52,407),radius=18,fill=fill)
- d.text((84,357),cta,font=cf,fill='white')
- return base.convert('RGB')
+ """Create a compact, high-contrast trustedDialog banner at exactly 1088 x 464 px."""
+ W,H=PREVIEW_SIZE
+ panel_w=455
+ image_w=W-panel_w
+ # A strict split layout is more robust than placing small text over arbitrary website photography.
+ artwork=ImageOps.fit(source.convert('RGB'),(image_w,H),Image.Resampling.LANCZOS,centering=(.5,.5))
+ brand=safe_brand_rgb(brand_color)
+ # Keep very pale or very dark website colors usable while preserving the hue impression.
+ if sum(brand)>690:brand=tuple(max(0,int(v*.72)) for v in brand)
+ panel=Image.new('RGB',(panel_w,H),brand)
+ result=Image.new('RGB',(W,H),'white')
+ result.paste(panel,(0,0));result.paste(artwork,(panel_w,0))
+ d=ImageDraw.Draw(result)
+ text_color=readable_color(brand)
+ accent=(255,255,255) if text_color=='#ffffff' else (17,17,17)
+ upper,main,lower,cta=campaign_message(headline)
+ left=48;available=panel_w-96
+ y=55
+ if upper:
+  small=fit_font(d,upper,available,30,22,True)
+  d.text((left,y),upper,font=small,fill=text_color)
+  y+=48
+ main_font=fit_font(d,main,available,92,48,True)
+ main_box=d.textbbox((0,0),main,font=main_font)
+ main_h=main_box[3]-main_box[1]
+ d.text((left,y),main,font=main_font,fill=text_color)
+ y+=main_h+10
+ if lower:
+  lower_font=fit_font(d,lower,available,47,31,True)
+  d.text((left,y),lower,font=lower_font,fill=text_color)
+ # CTA: large and unambiguous, never smaller than 24 px.
+ cta_font=fit_font(d,cta,available-52,28,24,True)
+ cta_text_w=d.textlength(cta,font=cta_font)
+ button_w=min(available,cta_text_w+52);button_h=64
+ button_y=H-102
+ if text_color=='#ffffff':
+  button_fill=(255,255,255);button_text=brand
+ else:
+  button_fill=(17,17,17);button_text=(255,255,255)
+ d.rounded_rectangle((left,button_y,left+button_w,button_y+button_h),radius=18,fill=button_fill)
+ d.text((left+26,button_y+16),cta,font=cta_font,fill=button_text)
+ # A subtle divider gives stable visual guidance without adding detail.
+ d.rectangle((panel_w-2,0,panel_w,H),fill=accent)
+ return result
 
 def png_data(image):
  buffer=io.BytesIO();image.save(buffer,'PNG',optimize=False);return buffer.getvalue()
