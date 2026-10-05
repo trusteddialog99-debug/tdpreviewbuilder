@@ -175,50 +175,60 @@ def fit_font(draw,text,max_width,start_size,min_size=25,bold=True):
   size-=2
  return font(min_size,bold)
 
-def generate_preview(source,headline,brand_color='#1375d7'):
- """Create a compact, high-contrast trustedDialog banner at exactly 1088 x 464 px."""
+def wrap_fitted_text(draw,text,max_width,start_size,min_size=28,max_lines=2):
+ words=text.split();size=start_size
+ while size>=min_size:
+  chosen=font(size,True);lines=[];line=''
+  for word in words:
+   test=(line+' '+word).strip()
+   if draw.textlength(test,font=chosen)<=max_width:line=test
+   else:
+    if line:lines.append(line)
+    line=word
+  if line:lines.append(line)
+  if len(lines)<=max_lines:return lines,chosen
+  size-=2
+ return lines[:max_lines],font(min_size,True)
+
+def generate_preview(source,headline,brand_color='#1375d7',brand_name=''):
+ """Bold retail-style trustedDialog banner: brand, dominant offer, CTA and one relevant motif."""
  W,H=PREVIEW_SIZE
- panel_w=455
- image_w=W-panel_w
- # A strict split layout is more robust than placing small text over arbitrary website photography.
- artwork=ImageOps.fit(source.convert('RGB'),(image_w,H),Image.Resampling.LANCZOS,centering=(.5,.5))
- brand=safe_brand_rgb(brand_color)
- # Keep very pale or very dark website colors usable while preserving the hue impression.
- if sum(brand)>690:brand=tuple(max(0,int(v*.72)) for v in brand)
- panel=Image.new('RGB',(panel_w,H),brand)
  result=Image.new('RGB',(W,H),'white')
- result.paste(panel,(0,0));result.paste(artwork,(panel_w,0))
+ brand=safe_brand_rgb(brand_color)
+ if sum(brand)<105:brand=tuple(min(255,int(v+55)) for v in brand)
+ if sum(brand)>700:brand=tuple(max(0,int(v*.68)) for v in brand)
+ # Larger motif area. The overlapping angled panel creates a strong retail-campaign composition.
+ artwork=ImageOps.fit(source.convert('RGB'),(710,H),Image.Resampling.LANCZOS,centering=(.5,.5))
+ result.paste(artwork,(378,0))
  d=ImageDraw.Draw(result)
+ d.polygon([(0,0),(640,0),(520,H),(0,H)],fill=brand)
  text_color=readable_color(brand)
- accent=(255,255,255) if text_color=='#ffffff' else (17,17,17)
+ primary=(255,255,255) if text_color=='#ffffff' else (17,17,17)
+ brand_label=short(brand_name or '',22)
+ if brand_label:
+  brand_font=fit_font(d,brand_label,420,58,34,True)
+  d.text((62,38),brand_label,font=brand_font,fill=primary)
  upper,main,lower,cta=campaign_message(headline)
- left=48;available=panel_w-96
- y=55
- if upper:
-  small=fit_font(d,upper,available,30,22,True)
-  d.text((left,y),upper,font=small,fill=text_color)
-  y+=48
- main_font=fit_font(d,main,available,92,48,True)
- main_box=d.textbbox((0,0),main,font=main_font)
- main_h=main_box[3]-main_box[1]
- d.text((left,y),main,font=main_font,fill=text_color)
- y+=main_h+10
- if lower:
-  lower_font=fit_font(d,lower,available,47,31,True)
-  d.text((left,y),lower,font=lower_font,fill=text_color)
- # CTA: large and unambiguous, never smaller than 24 px.
- cta_font=fit_font(d,cta,available-52,28,24,True)
- cta_text_w=d.textlength(cta,font=cta_font)
- button_w=min(available,cta_text_w+52);button_h=64
- button_y=H-102
- if text_color=='#ffffff':
-  button_fill=(255,255,255);button_text=brand
+ x=64
+ if re.search(r'\d',main):
+  d.text((x,142),upper,font=font(35,True),fill=primary)
+  main_font=fit_font(d,main,405,126,78,True)
+  d.text((x,180),main,font=main_font,fill=primary)
+  lower_font=fit_font(d,lower,405,54,38,True)
+  d.text((x,306),lower,font=lower_font,fill=primary)
  else:
-  button_fill=(17,17,17);button_text=(255,255,255)
- d.rounded_rectangle((left,button_y,left+button_w,button_y+button_h),radius=18,fill=button_fill)
- d.text((left+26,button_y+16),cta,font=cta_font,fill=button_text)
- # A subtle divider gives stable visual guidance without adding detail.
- d.rectangle((panel_w-2,0,panel_w,H),fill=accent)
+  lines,main_font=wrap_fitted_text(d,main,400,65,38,2)
+  y=158
+  for line in lines:
+   d.text((x,y),line,font=main_font,fill=primary);y+=main_font.size+7
+ cta_label=cta+'  →'
+ cta_font=fit_font(d,cta_label,340,29,24,True)
+ tw=d.textlength(cta_label,font=cta_font)
+ button_w=min(390,tw+62);button_y=H-82;button_h=58
+ button_fill=(255,255,255) if primary==(255,255,255) else (17,17,17)
+ button_text=brand if primary==(255,255,255) else (255,255,255)
+ d.rounded_rectangle((x,button_y,x+button_w,button_y+button_h),radius=29,fill=button_fill)
+ d.text((x+31,button_y+13),cta_label,font=cta_font,fill=button_text)
  return result
 
 def png_data(image):
@@ -250,7 +260,7 @@ if analyze_clicked:
     except Exception:continue
    if selected is not None:
     st.session_state.selected_image=selected_url
-    st.session_state.generated_preview=png_data(generate_preview(selected,result['subject'],st.session_state.brand_color))
+    st.session_state.generated_preview=png_data(generate_preview(selected,result['subject'],st.session_state.brand_color,result['brand']))
    else:st.session_state.generated_preview=None
    for logo in result['logos']:
     try:
@@ -273,7 +283,7 @@ if analysis:
   if st.button('Ausgewähltes Motiv übernehmen'):
    try:
     img=image_from_url(chosen);st.session_state.selected_image=chosen
-    st.session_state.generated_preview=png_data(generate_preview(img,st.session_state.subject,st.session_state.get('brand_color','#1375d7')))
+    st.session_state.generated_preview=png_data(generate_preview(img,st.session_state.subject,st.session_state.get('brand_color','#1375d7'),st.session_state.sender))
     st.rerun()
    except Exception as error:st.error(f'Das Bild konnte nicht übernommen werden: {error}')
 
