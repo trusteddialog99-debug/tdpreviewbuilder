@@ -130,21 +130,11 @@ def image_from_url(value):
  image=Image.open(io.BytesIO(raw));image.load();return image.convert('RGB')
 
 def font(size,bold=False):
- # Streamlit Cloud images differ in installed fonts. Search several common locations;
- # never silently fall back to Pillow's tiny bitmap font because it ignores `size`.
- import glob
- explicit=[
-  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-  '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf',
-  '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
- ]
- patterns=['/usr/share/fonts/**/*Bold*.ttf','/usr/local/share/fonts/**/*Bold*.ttf'] if bold else ['/usr/share/fonts/**/*.ttf','/usr/local/share/fonts/**/*.ttf']
- for path in explicit+[x for pattern in patterns for x in glob.glob(pattern,recursive=True)]:
-  try:return ImageFont.truetype(path,int(size))
+ paths=['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf','/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf']
+ for path in paths:
+  try:return ImageFont.truetype(path,size)
   except OSError:pass
- # Last resort: Pillow can resolve DejaVuSans by font name on many Linux builds.
- try:return ImageFont.truetype('DejaVuSans-Bold.ttf' if bold else 'DejaVuSans.ttf',int(size))
- except OSError:raise RuntimeError('Keine skalierbare TTF-Schrift gefunden. Bitte DejaVu Sans oder Liberation Sans bereitstellen.')
+ return ImageFont.load_default()
 
 def readable_color(rgb):
  # Returns black or white according to WCAG-style relative luminance.
