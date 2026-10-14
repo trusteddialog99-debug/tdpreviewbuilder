@@ -1,4 +1,4 @@
-import base64, colorsys, html, io, ipaddress, json, math, os, re, socket
+import base64, colorsys, html, io, ipaddress, json, os, re, socket
 from functools import lru_cache
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -14,7 +14,8 @@ SEAL_URL = 'https://img.ui-portal.de/trusteddialog/trustlogo/trusted-sign_GMX.sv
 GMX_LOGO_URL = 'https://logo.ui-portal.de/td/ab166bef-b456-4e67-984f-72fb64d4a2c6/bo10.svg'
 UA = 'Mozilla/5.0 (compatible; trustedDialog-Preview-Builder/1.0)'
 PREVIEW_SIZE = (1088, 464)
-AVATAR_DEFAULT = '#8ea8ce'  # Platzhalter-Avatar laut GMX-Vorlage
+AVATAR_DEFAULT = '#B8DDFD'     # Fallback-Avatar (Initialen) laut GMX-Vorlage
+AVATAR_BG_DEFAULT = '#FFFFFF'  # Hintergrund hinter Logo-Avataren der tD-Mail (transparente SVG/PNG)
 
 
 @st.cache_data(show_spinner=False)
@@ -41,7 +42,8 @@ def e(x):
 
 
 def display_text(x):
-    return e(x[:34] + '...' if len(x) > 34 else x)
+    """Nur escapen; das Kürzen mit „…“ übernimmt der Browser pixelgenau (Siegel und Uhrzeit bleiben sichtbar)."""
+    return e(re.sub(r'\s+', ' ', x or '').strip()[:80])
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +106,138 @@ def unique(values):
 def short(value, limit=37):
     value = re.sub(r'\s+', ' ', value or '').strip()
     return value if len(value) <= limit else value[:limit - 3].rstrip() + '...'
+
+
+# ---------------------------------------------------------------------------
+# Markenname des Absenders
+# ---------------------------------------------------------------------------
+LEGAL_SUFFIX_RE = re.compile(
+    r'(?:,?\s+)(?:GmbH\s*&\s*Co\.?\s*(?:KGaA|KG|OHG)|GmbH|gGmbH|AG|SE|KGaA|KG|OHG|UG(?:\s*\(haftungsbeschränkt\))?|'
+    r'e\.\s?K\.?|e\.\s?V\.?|Inc\.?|Ltd\.?|LLC|S\.A\.?|B\.V\.?|N\.V\.?|S\.r\.l\.?|Corp\.?|Co\.)\s*$', re.I)
+SHOP_SUFFIX_RE = re.compile(
+    r'(?:\s*[-–|:]\s*|\s+)(?:offizielle[rs]?\s+)?(?:online[- ]?shop|onlineshop|shop online|webshop|online[- ]?store|'
+    r'official (?:online )?(?:store|site|website)|offizielle (?:website|seite|homepage))\s*$', re.I)
+GENERIC_NAMES = {'home', 'startseite', 'homepage', 'start', 'shop', 'onlineshop', 'online shop', 'willkommen', 'welcome',
+                 'index', 'website', 'offizielle website', 'official website', 'mode', 'news', 'login', 'anmelden'}
+TITLE_SPLIT_RE = re.compile(r'\s+[|–—·•»:]\s+|\s+-\s+|\s*\|\s*')
+SECOND_LEVEL = {'co', 'com', 'org', 'net', 'ac', 'gv', 'or', 'ne', 'gov', 'edu'}
+
+
+def brand_key(value):
+    value = (value or '').lower()
+    for a, b in (('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss'), ('&', 'und')):
+        value = value.replace(a, b)
+    return re.sub(r'[^a-z0-9]', '', value)
+
+
+def domain_label(host):
+    parts = [p for p in (host or '').lower().split('.') if p and p != 'www']
+    if len(parts) >= 3 and parts[-2] in SECOND_LEVEL:
+        return parts[-3]
+    return parts[-2] if len(parts) >= 2 else (parts[0] if parts else '')
+
+
+def clean_brand(value):
+    value = re.sub(r'\s+', ' ', html.unescape(value or '')).strip(' -|–—·•:»«"\'®™©')
+    value = re.sub(r'^(?:©|\(c\)|copyright)\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?)?\s*', '', value, flags=re.I)
+    for _ in range(2):
+        value = SHOP_SUFFIX_RE.sub('', value).strip(' -|–—·,')
+        value = LEGAL_SUFFIX_RE.sub('', value).strip(' -|–—·,')
+    if ' ' not in value:                                   # „dm.de“ / „home24.de“ -> Markenname ohne Endung
+        value = re.sub(r'(?i)^(?:www\.)?([\w-]+)\.(?:de|com|at|ch|net|org|eu|shop|info|biz|io|co\.uk|nl|fr|it)$', r'\1', value)
+    return value.strip(' ®™')
+
+
+def json_ld_names(soup):
+    """Liefert (Name, Gewicht) aus JSON-LD: Organization/Brand/Store > WebSite > publisher."""
+    out = []
+
+    def walk(node, depth=0):
+        if depth > 6:
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+            return
+        if not isinstance(node, dict):
+            return
+        kind = node.get('@type', '')
+        kind = ' '.join(kind) if isinstance(kind, list) else str(kind)
+        name = node.get('name') if isinstance(node.get('name'), str) else ''
+        if name:
+            if re.search(r'Organization|Corporation|Brand|Store|LocalBusiness|NewsMediaOrganization', kind):
+                out.append((name, 6))
+            elif 'WebSite' in kind:
+                out.append((name, 4))
+        for key in ('publisher', 'brand', 'author', '@graph', 'mainEntity'):
+            if key in node:
+                walk(node[key], depth + 1)
+
+    for tag in soup.find_all('script', attrs={'type': 'application/ld+json'})[:12]:
+        try:
+            walk(json.loads(tag.string or tag.get_text() or ''))
+        except Exception:
+            continue
+    return out
+
+
+def detect_brand(soup, host):
+    """Markenname des Absenders. Quellen werden gewichtet und gegen die Domain geprüft,
+    damit nicht ein Seitentitel wie „Mode online kaufen“ als Absender landet."""
+    label = domain_label(host)
+    label_key = brand_key(label)
+    candidates = []
+
+    def add(value, weight):
+        value = clean_brand(value)
+        if 2 <= len(value) <= 40 and value.lower() not in GENERIC_NAMES:
+            candidates.append((value, weight))
+
+    add(meta(soup, 'og:site_name'), 6)
+    add(meta(soup, 'application-name'), 5)
+    add(meta(soup, 'apple-mobile-web-app-title'), 5)
+    for name, weight in json_ld_names(soup):
+        add(name, weight)
+    title = soup.title.get_text(' ', strip=True) if soup.title else ''
+    for source, weight in ((title, 3), (meta(soup, 'og:title'), 2)):
+        parts = [p for p in TITLE_SPLIT_RE.split(source or '') if p.strip()]
+        for index, part in enumerate(parts):
+            add(part, weight + (1 if index in (0, len(parts) - 1) and len(parts) > 1 else 0))
+    for tag in soup.find_all('img')[:80]:
+        marker = (' '.join(tag.get('class', [])) + ' ' + (tag.get('id') or '') + ' ' + (tag.get('src') or '')).lower()
+        if 'logo' in marker:
+            add(re.sub(r'(?i)\s*(?:-\s*)?logo\b.*$', '', tag.get('alt') or tag.get('title') or ''), 3)
+    twitter = meta(soup, 'twitter:site').lstrip('@')
+    if twitter:
+        add(twitter, 1)
+    copyright_match = re.search(r'(?:©|&copy;|Copyright)\s*(?:\d{4}(?:\s*[-–]\s*\d{4})?)?\s*([A-ZÄÖÜ][\w&.\- ]{1,40}?)'
+                                r'(?:\s*(?:GmbH|AG|SE|KG|Inc|Ltd)\b|[.,|]|\s{2}|$)', soup.get_text(' ', strip=True)[-6000:])
+    if copyright_match:
+        add(copyright_match.group(1), 2)
+
+    best, best_score = '', -99.0
+    for value, weight in candidates:
+        key = brand_key(value)
+        if not key:
+            continue
+        score = weight
+        if label_key and key == label_key:
+            score += 10
+        elif label_key and len(label_key) >= 2 and (key.startswith(label_key) or label_key.startswith(key)):
+            score += 7
+        elif label_key and len(label_key) >= 3 and (label_key in key or key in label_key):
+            score += 5
+        elif not label_key or weight < 5:
+            score -= 4                      # Titel-Fragment ohne Bezug zur Domain -> eher Slogan als Marke
+        words = len(value.split())
+        score -= max(0, words - 3) * 1.5 + len(value) * .04
+        if value.isupper() and len(value) > 4 and words == 1 and label_key and key == label_key:
+            score += .5                     # Schreibweise der Marke (z. B. „OTTO“) beibehalten
+        if score > best_score:
+            best, best_score = value, score
+    if best and best_score >= 3:
+        return best
+    return label.replace('-', ' ').title() if label else host
 
 
 # ---------------------------------------------------------------------------
@@ -236,10 +370,8 @@ def analyze_site(value):
     raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000)
     html_text = raw.decode('utf-8', errors='ignore')
     soup = BeautifulSoup(raw, 'html.parser')
-    title = meta(soup, 'og:site_name') or (soup.title.get_text(' ', strip=True) if soup.title else '')
     host = (urlparse(final_url).hostname or '').replace('www.', '')
-    brand = re.split(r'\s*[|–—]\s*', title)[0].strip() if title else host.split('.')[0]
-    brand = re.sub(r'\s+-\s+.*$', '', brand).strip() or host
+    brand = detect_brand(soup, host)
     description = meta(soup, 'og:description', 'description')
     body_text = ' '.join(soup.stripped_strings)
     offers = []
@@ -283,6 +415,7 @@ def analyze_site(value):
             logos.append(urljoin(final_url, link['href']))
     images = unique([x[1] for x in sorted(images, key=lambda item: item[0], reverse=True)])[:10]
     logos = unique(logos)[:8]
+    avatar_sources = collect_avatar_sources(soup, final_url)
     offer = offers[0] if offers else ''
     if offer:
         subject = short(('Jetzt ' + offer + ' sichern') if len(offer) < 26 else offer)
@@ -292,7 +425,87 @@ def analyze_site(value):
         preheader = short('Jetzt Vorteile entdecken')
     return {'url': final_url, 'brand': short(brand), 'description': description, 'offers': offers,
             'color_scores': color_scores, 'colors': rank_brand_colors(color_scores), 'images': images,
-            'logos': logos, 'subject': subject, 'preheader': preheader}
+            'logos': logos, 'avatar_sources': avatar_sources, 'subject': subject, 'preheader': preheader}
+
+
+# ---------------------------------------------------------------------------
+# Avatar-Kandidaten (Icons und Logos der Website)
+# ---------------------------------------------------------------------------
+def icon_size_hint(value):
+    sizes = [int(a) * int(b) for a, b in re.findall(r'(\d+)\s*x\s*(\d+)', value or '', re.I)]
+    return int(max(sizes) ** .5) if sizes else 0
+
+
+SVG_CASE = ['viewBox', 'preserveAspectRatio', 'gradientUnits', 'gradientTransform', 'patternUnits', 'patternTransform',
+            'clipPathUnits', 'maskUnits', 'maskContentUnits', 'stdDeviation', 'textLength', 'lengthAdjust', 'baseProfile',
+            'clipPath', 'linearGradient', 'radialGradient', 'feGaussianBlur', 'feOffset', 'feFlood', 'feComposite',
+            'feMerge', 'feMergeNode', 'feColorMatrix', 'feBlend', 'textPath', 'foreignObject', 'xlink:href']
+
+
+def fix_svg_case(markup):
+    """Der HTML-Parser schreibt Inline-SVG klein (viewbox, lineargradient) – SVG braucht die Originalschreibweise."""
+    for name in SVG_CASE:
+        markup = re.sub(r'(?<=[\s<"/])' + name.lower() + r'(?=[\s=>/])', name, markup)
+    if 'xmlns=' not in markup[:300]:
+        markup = markup.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"', 1)
+    return markup
+
+
+def collect_avatar_sources(soup, base_url):
+    """Sammelt Avatar-Kandidaten mit Priorität. Rückgabe: Liste von (Priorität, Quelle, Bezeichnung);
+    Quelle ist eine URL oder ein Inline-SVG (beginnt mit '<svg')."""
+    found = []
+    manifest = ''
+    for link in soup.find_all('link', href=True):
+        rel = ' '.join(link.get('rel', [])).lower()
+        href = urljoin(base_url, link['href'])
+        size = icon_size_hint(link.get('sizes'))
+        if 'apple-touch-icon' in rel:
+            found.append((10 + min(size, 512) / 256, href, f'App-Icon{f" {size}px" if size else ""}'))
+        elif 'mask-icon' in rel:
+            found.append((2, href, 'Masken-Icon (SVG)'))
+        elif 'icon' in rel:
+            svg = 'svg' in (link.get('type') or '') or href.lower().split('?')[0].endswith('.svg')
+            found.append((7 + (2 if svg else 0) + min(size, 256) / 128, href, 'Favicon (SVG)' if svg else
+                          f'Favicon{f" {size}px" if size else ""}'))
+        elif 'manifest' in rel and not manifest:
+            manifest = href
+    tile = meta(soup, 'msapplication-TileImage')
+    if tile:
+        found.append((6, urljoin(base_url, tile), 'Kachel-Icon'))
+    for tag in soup.find_all('script', attrs={'type': 'application/ld+json'})[:12]:
+        for logo in re.findall(r'"logo"\s*:\s*(?:\{[^}]*?"url"\s*:\s*)?"([^"]+)"', tag.string or tag.get_text() or ''):
+            found.append((8.5, urljoin(base_url, logo), 'Logo (strukturierte Daten)'))
+    for tag in soup.find_all('img'):
+        src = tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src')
+        marker = (' '.join(tag.get('class', [])) + ' ' + (tag.get('id') or '') + ' ' + (tag.get('alt') or '') + ' '
+                  + (src or '')).lower()
+        if src and 'logo' in marker and not src.startswith('data:image/gif'):
+            found.append((5, urljoin(base_url, src), 'Logo-Grafik der Seite'))
+    for svg in soup.find_all('svg')[:60]:
+        parents = [p for p in svg.parents if getattr(p, 'name', None) in ('a', 'div', 'span', 'header')][:3]
+        marker = (' '.join(svg.get('class', [])) + ' ' + (svg.get('id') or '') + ' ' + (svg.get('aria-label') or '') +
+                  ' ' + ' '.join(' '.join(p.get('class', [])) + ' ' + (p.get('id') or '') for p in parents)).lower()
+        if 'logo' in marker and len(str(svg)) < 150000 and not svg.find('use'):
+            found.append((4, fix_svg_case(str(svg)), 'Logo (Inline-SVG)'))
+    if manifest:
+        try:
+            raw, final, _ = safe_fetch(manifest, 300000)
+            for icon in json.loads(raw.decode('utf-8', errors='ignore')).get('icons', [])[:8]:
+                if icon.get('src'):
+                    size = icon_size_hint(icon.get('sizes'))
+                    found.append((9 + min(size, 512) / 256, urljoin(final, icon['src']),
+                                  f'Web-App-Icon{f" {size}px" if size else ""}'))
+        except Exception:
+            pass
+    found.append((1, urljoin(base_url, '/favicon.ico'), 'Favicon (Standard)'))
+    found.sort(key=lambda item: item[0], reverse=True)
+    out, seen = [], set()
+    for priority, source, label in found:
+        if source not in seen:
+            seen.add(source)
+            out.append((priority, source, label))
+    return out[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +543,85 @@ def to_bytes(image, fmt='PNG'):
 
 def png_data(image):
     return to_bytes(image, 'PNG')
+
+
+def is_svg_bytes(raw):
+    head = raw[:2048].lstrip().lower()
+    return head.startswith(b'<svg') or (head.startswith(b'<?xml') and b'<svg' in raw[:4096].lower()) or \
+        (head.startswith(b'<!--') and b'<svg' in raw[:4096].lower())
+
+
+def sized_svg(raw):
+    """SVG ohne width/height erhält Maße aus der viewBox – sonst zeichnet der Browser es nicht zuverlässig in ein Canvas."""
+    text = raw.decode('utf-8', errors='ignore')
+    match = re.search(r'<svg\b[^>]*>', text, re.I)
+    if not match:
+        return raw
+    tag = match.group(0)
+    if 'xmlns=' not in tag:
+        tag = tag[:-1].rstrip('/') + ' xmlns="http://www.w3.org/2000/svg">' if not tag.endswith('/>') else tag
+    width = re.search(r'\swidth\s*=\s*["\']\s*([\d.]+)(px)?\s*["\']', tag)
+    height = re.search(r'\sheight\s*=\s*["\']\s*([\d.]+)(px)?\s*["\']', tag)
+    view = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)', tag, re.I)
+    if not (width and height):
+        w, h = (float(view.group(1)), float(view.group(2))) if view else (256.0, 256.0)
+        tag = re.sub(r'\s(width|height)\s*=\s*["\'][^"\']*["\']', '', tag)
+        tag = tag.replace('<svg', f'<svg width="{w:g}" height="{h:g}"', 1)
+    return (text[:match.start()] + tag + text[match.end():]).encode('utf-8')
+
+
+def avatar_data_uri(raw):
+    """Bilddaten -> Data-URI für den Avatar. SVG bleibt Vektor (mit Maßen), alles andere wird PNG (max. 256 px).
+    Rückgabe (data_uri, Breite, Höhe) oder None, wenn es kein brauchbares Bild ist."""
+    if not raw:
+        return None
+    if is_svg_bytes(raw):
+        data = sized_svg(raw)
+        if b'<script' in data.lower():
+            return None
+        return 'data:image/svg+xml;base64,' + base64.b64encode(data).decode(), 0, 0
+    try:
+        image = Image.open(io.BytesIO(raw))
+        if getattr(image, 'format', '') == 'ICO':
+            sizes = sorted(image.info.get('sizes', []) or [image.size])
+            image.size = sizes[-1]
+        image.load()
+    except Exception:
+        return None
+    image = image.convert('RGBA')
+    if min(image.size) < 16:
+        return None
+    width, height = image.size
+    image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+    return 'data:image/png;base64,' + base64.b64encode(png_data(image)).decode(), width, height
+
+
+def load_avatar_options(sources, limit=8):
+    """Lädt die Avatar-Kandidaten, verwirft Duplikate und unbrauchbare Dateien."""
+    options, hashes = [], set()
+    for priority, source, label in sources:
+        if len(options) >= limit:
+            break
+        try:
+            raw = source.encode('utf-8') if source.lstrip().startswith('<svg') else safe_fetch(source, 2500000)[0]
+        except Exception:
+            continue
+        result = avatar_data_uri(raw)
+        if not result:
+            continue
+        data, width, height = result
+        digest = hash(data)
+        if digest in hashes:
+            continue
+        hashes.add(digest)
+        score = priority + (2 if min(width, height) >= 120 else -3 if 0 < min(width, height) < 48 else 0)
+        if width and height and not .6 <= width / height <= 1.6:
+            score -= 2                                    # breite Logos passen schlechter in den runden Avatar
+        detail = f'{width}×{height}px' if width else 'SVG'
+        options.append({'src': data, 'label': label, 'detail': detail, 'score': score,
+                        'url': '' if source.lstrip().startswith('<svg') else source})
+    options.sort(key=lambda item: item['score'], reverse=True)
+    return options
 
 
 def usable_motif(image):
@@ -630,8 +922,9 @@ def render_banner(source_bytes, logo_bytes, headline, brand_color, brand_name, c
 SEAL = remote_data_uri(SEAL_URL)
 GMX_LOGO = remote_data_uri(GMX_LOGO_URL)
 
-for k, v in {'domain': '', 'sender': 'Absender', 'subject': 'Betreff', 'preheader': 'Preview-Text', 'color': AVATAR_DEFAULT,
-             'analysis': None, 'generated_preview': None, 'generated_avatar': '', 'selected_image': '',
+for k, v in {'domain': '', 'sender': 'Marke', 'subject': 'Betreff', 'preheader': 'Preview-Text', 'color': AVATAR_DEFAULT,
+             'analysis': None, 'generated_preview': None, 'avatar_options': [], 'avatar_choice': -1,
+             'avatar_bg': AVATAR_BG_DEFAULT, 'avatar_fit': 'Eingepasst', 'avatar_pad': 0, 'selected_image': '',
              'source_image': None, 'banner_logo': None, 'brand_color': '#1375d7', 'banner_headline': '',
              'banner_cta': '', 'banner_mirror': False}.items():
     st.session_state.setdefault(k, v)
@@ -665,25 +958,19 @@ if analyze_clicked:
             st.session_state.preheader = result['preheader']
             st.session_state.banner_headline = result['offers'][0] if result['offers'] else result['subject']
             st.session_state.banner_cta = ''
-            st.session_state.generated_avatar = ''
+            st.session_state.avatar_options = load_avatar_options(result['avatar_sources'])
+            st.session_state.avatar_choice = 0 if st.session_state.avatar_options else -1
             st.session_state.banner_logo = None
             logo_image = None
             for logo_url in result['logos']:
                 try:
-                    raw, _, content_type = safe_fetch(logo_url, 3000000)
+                    raw, _, _ = safe_fetch(logo_url, 3000000)
+                    prepared = prepare_logo(image_from_bytes(raw))
                 except Exception:
                     continue
-                if not st.session_state.generated_avatar:
-                    st.session_state.generated_avatar = 'data:' + (content_type or 'image/png') + ';base64,' + base64.b64encode(raw).decode()
-                if logo_image is None:
-                    try:
-                        prepared = prepare_logo(image_from_bytes(raw))
-                        if prepared is not None:
-                            logo_image = prepared
-                            st.session_state.banner_logo = png_data(prepared)
-                    except Exception:
-                        pass
-                if st.session_state.generated_avatar and logo_image is not None:
+                if prepared is not None:
+                    logo_image = prepared
+                    st.session_state.banner_logo = png_data(prepared)
                     break
             ranked = rank_brand_colors(result['color_scores'], logo_image)
             result['colors'] = ranked
@@ -731,15 +1018,48 @@ if analysis:
             except Exception as error:
                 st.error(f'Das Bild konnte nicht übernommen werden: {error}')
 
+
+def avatar_gallery(options, background):
+    """Kleine Vorschau aller gefundenen Avatar-Grafiken (rund, auf dem gewählten Hintergrund)."""
+    cells = []
+    for index, option in enumerate(options):
+        cells.append(
+            f'<div style="display:flex;flex-direction:column;align-items:center;gap:4px;width:64px">'
+            f'<div style="width:48px;height:48px;border-radius:50%;overflow:hidden;background:{e(background)};'
+            f'box-shadow:0 0 0 1px rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center">'
+            f'<img src="{option["src"]}" style="width:100%;height:100%;object-fit:contain"></div>'
+            f'<span style="font-size:12px;color:#666">{index + 1}</span></div>')
+    return '<div style="display:flex;flex-wrap:wrap;gap:6px 4px;margin:2px 0 6px">' + ''.join(cells) + '</div>'
+
+
 st.subheader('2. Inhalte bearbeiten')
 l, r = st.columns([.86, 1.14], gap='large')
 with l:
-    st.text_input('Absender / Marke', key='sender', max_chars=37)
+    st.text_input('Absender / Marke', key='sender', max_chars=37,
+                  help='Markenname des Absenders. Zu lange Namen werden in der Vorschau mit „…“ gekürzt, damit das Siegel sichtbar bleibt.')
     st.text_input('Betreff', key='subject', max_chars=37)
     st.text_input('Preview-Text', key='preheader', max_chars=37)
-    st.color_picker('Fallback-Avatarfarbe', key='color')
-    af = st.file_uploader('Avatar / Logo überschreiben', type=['svg', 'png', 'jpg', 'jpeg', 'webp'],
-                          help='SVG wird direkt nach dem Upload im Browser in PNG konvertiert und anschließend nur noch als PNG verwendet.')
+    with st.expander('Avatar der trustedDialog-Mail', expanded=True):
+        options = st.session_state.avatar_options
+        if options:
+            st.markdown(avatar_gallery(options, st.session_state.avatar_bg), unsafe_allow_html=True)
+            st.radio('Avatar-Grafik von der Website', list(range(len(options))) + [-1], key='avatar_choice',
+                     format_func=lambda i: 'Keine Grafik – Initialen auf Fallback-Farbe' if i == -1 else
+                     f'{i + 1} · {options[i]["label"]} ({options[i]["detail"]})')
+        else:
+            st.caption('Nach der Website-Analyse stehen hier die gefundenen Logos und Icons zur Auswahl.')
+        af = st.file_uploader('Eigenes Avatar / Logo hochladen (überschreibt die Auswahl)',
+                              type=['svg', 'png', 'jpg', 'jpeg', 'webp'],
+                              help='SVG wird im Browser auf dem Avatar-Hintergrund in PNG umgewandelt; transparente Bereiche bleiben weiß.')
+        c1, c2 = st.columns(2)
+        with c1:
+            st.color_picker('Hintergrund hinter dem Logo', key='avatar_bg',
+                            help='Standard: Weiß, damit transparente SVG/PNG-Logos korrekt dargestellt werden.')
+        with c2:
+            st.color_picker('Fallback-Avatarfarbe (Initialen)', key='color')
+        st.radio('Darstellung im Kreis', ['Eingepasst', 'Füllend'], key='avatar_fit', horizontal=True,
+                 help='Eingepasst: ganzes Logo sichtbar. Füllend: Kreis wird komplett ausgefüllt (Ränder werden beschnitten).')
+        st.slider('Innenabstand (%)', 0, 30, key='avatar_pad', step=2)
     pf = st.file_uploader('Preview-Bild überschreiben (1088 × 464 px)', type=['png', 'jpg', 'jpeg', 'webp'])
     with st.expander('Grafik-Einstellungen (generiertes Preview-Bild)', expanded=False):
         st.text_input('Headline in der Grafik', key='banner_headline',
@@ -762,124 +1082,105 @@ with l:
                            file_name=f"trustedDialog_Preview_{re.sub(r'[^A-Za-z0-9._-]+', '_', st.session_state.sender)}_1088x464.png",
                            mime='image/png', use_container_width=True)
 
-sender, subject, pre = display_text(st.session_state.sender), display_text(st.session_state.subject), display_text(st.session_state.preheader)
-download_sender = json.dumps(st.session_state.sender or 'Absender', ensure_ascii=False).replace('<', '\\u003c')
-avsrc = uri(af) if af else st.session_state.generated_avatar
-psrc = uri(pf) if pf else ('data:image/png;base64,' + base64.b64encode(st.session_state.generated_preview).decode() if st.session_state.generated_preview else '')
-letters = e(''.join(x[0] for x in st.session_state.sender.split()[:2]).upper() or 'M')
-fallback_color = e(st.session_state.color)
-is_svg = str(bool(af and af.name.lower().endswith('.svg'))).lower()
-av = (f'<img class="avatar" id="uploaded-avatar" data-is-svg="{is_svg}" src="{avsrc}">' if avsrc
-      else f'<span class="avatar fallback" style="background:{fallback_color}">{letters}</span>')
-pv = f'<img class="preview" src="{psrc}">' if psrc else '<div class="preview placeholder">Bild einfügen</div>'
-seal = f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">'
 
-
-def star_points(cx, cy, R, r):
-    return ' '.join(f'{cx + (R if i % 2 == 0 else r) * math.cos(-math.pi / 2 + i * math.pi / 5):.2f},'
-                    f'{cy + (R if i % 2 == 0 else r) * math.sin(-math.pi / 2 + i * math.pi / 5):.2f}' for i in range(10))
-
-
-# Maße stammen aus der Vorlage (373 x 755 px Screenshot); Koordinaten im .screen relativ zur Display-Ecke.
+# Maße 1:1 aus der Vorlage (344 x 701 px). Koordinaten im .screen relativ zur linken oberen Display-Ecke.
+# Grundlinien (Baseline) der Texte stammen aus der Vorlage; top = Baseline - 0,842 x Schriftgröße (Roboto, line-height 1).
 PHONE_TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Inter:wght@600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Inter:wght@600;700&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script><style>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .stage{display:flex;flex-direction:column;align-items:center}
-.phonewrap{position:relative;width:354px;height:732px}
-.sidebtn{position:absolute;background:linear-gradient(90deg,#4a4947,#9a9996 50%,#2c2b2a);border-radius:2px}
-.phone{position:absolute;left:4px;top:0;width:344px;height:732px;border-radius:56px;background:#2a2927}
+.phonewrap{position:relative;width:344px;height:701px}
+.sidebtn{position:absolute;border:1px solid #2c2b29;border-radius:1.5px;background:linear-gradient(90deg,#9a9895,#dcdbd9 50%,#b3b1ae)}
+.phone{position:absolute;left:7.5px;top:6.5px;width:325px;height:688px;border-radius:55px;background:#1b1a18}
 .l1,.l2,.l3,.bezel{position:absolute}
-.l1{inset:1.5px;border-radius:54.5px;background:#727270}
-.l2{inset:2.5px;border-radius:53.5px;background:#fff}
-.l3{inset:3.5px;border-radius:52.5px;background:#dcdcdc}
-.bezel{inset:6.5px;border-radius:50px;background:#1a1918}
-.screen{position:absolute;left:14px;top:13px;width:316px;height:706px;overflow:hidden;border-radius:43px;background:#fff;color:#111}
+.l1{inset:2px;border-radius:53px;background:#f1f1f1}
+.l2{inset:3px;border-radius:52px;background:#a4a4a4}
+.l3{inset:4px;border-radius:51px;background:#3f3f3f}
+.bezel{inset:5.5px;border-radius:49.5px;background:#100f0d}
+.screen{position:absolute;left:13.5px;top:12.5px;width:297.5px;height:662.5px;overflow:hidden;border-radius:42px;background:#fff;color:#111}
 .abs{position:absolute}
-.time{left:21px;top:11px;height:18px;font:600 15px/18px Inter,-apple-system,"SF Pro Text",Roboto,Arial,sans-serif;color:#000}
-.island{left:117px;top:12px;width:82px;height:23px;border-radius:12px;background:#0b0b0b}
-.island i{position:absolute;right:9px;top:6px;width:11px;height:11px;border-radius:50%;background:radial-gradient(circle,#05051a 30%,#1d2a63 62%,#0b0b0b 100%)}
-.signal{left:247px;top:22px;height:3px;display:flex;gap:2px}
-.signal i{width:2.6px;height:2.6px;border-radius:50%;background:#c3c3c3}
-.wifi{left:265px;top:15px;width:13px;height:10px}
-.battery{left:284px;top:15px;width:20px;height:10px;border:1px solid #c6c6c6;border-radius:3.5px}
-.battery:before{content:"";position:absolute;left:1.5px;top:1.5px;width:12px;height:5px;border-radius:1.5px;background:#000}
-.battery:after{content:"";position:absolute;right:-3px;top:2.2px;width:1.6px;height:3.4px;border-radius:0 1px 1px 0;background:#c6c6c6}
-.round{width:36px;height:36px;top:49px;border-radius:50%;background:#fff;box-shadow:0 0 12px rgba(0,0,0,.07);display:flex;align-items:center;justify-content:center}
-.hicon{width:21px;height:21px;stroke:#111;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.title{left:51px;top:54px;font:700 13px/16px Roboto,Arial,sans-serif;color:#000;white-space:nowrap}
-.mail{left:51px;top:70px;font:400 10px/12px Roboto,Arial,sans-serif;color:#a6a6a6;white-space:nowrap}
-.search{left:6px;top:94px;width:299px;height:35px;border-radius:18px;background:#fdfdfb;box-shadow:0 0 12px rgba(0,0,0,.07);display:flex;align-items:center;padding-left:11px;gap:9px;color:#6f6f6f;font-size:15px}
-.search svg{width:18px;height:18px;stroke:#111;fill:none;stroke-width:2.2;stroke-linecap:round}
-.hline{left:6px;width:299px;height:1px}
-.dots{left:6px;top:155px;height:4px;display:flex;gap:4px}
-.dots i{width:4px;height:4px;border-radius:50%;background:#3d8ad4}
-.dots i:nth-child(1){opacity:.45}.dots i:nth-child(2){opacity:.75}
-.recv{left:43px;top:150px;font:400 11px/14px Roboto,Arial,sans-serif;color:#4a4a4a;white-space:nowrap}
-.list{left:0;top:174px;width:316px}
-.row{position:relative;height:92.5px}
-.row:after{content:"";position:absolute;left:23px;right:0;bottom:0;height:1px;background:#d9d9d9}
-.row.last:after{display:none}
-.row.td{height:193px}
-.avatar{position:absolute;left:19px;top:10px;width:36px;height:36px;border-radius:50%;object-fit:cover;display:flex;align-items:center;justify-content:center;color:#fff;font:700 13px/36px Roboto,Arial,sans-serif;text-align:center;background:#8ea8ce}
-.td .avatar{top:11px}
-.senderline{position:absolute;left:65px;top:11px;height:20px;display:flex;align-items:center;white-space:nowrap}
-.sender{font:700 14px/20px Roboto,Arial,sans-serif;color:#000;max-width:170px;overflow:hidden;white-space:nowrap}
-.seal{width:14px;height:14px;flex:0 0 14px;margin-left:5px;object-fit:contain}
-.subject,.pre{position:absolute;left:65px;width:239px;height:20px;font:400 14px/20px Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden}
-.subject{top:32px;color:#111}
-.pre{top:55px;color:#a3a3a3}
-.rtime{position:absolute;right:12px;top:14px;font:400 11px/14px Roboto,Arial,sans-serif;color:#9e9e9e}
-.pwrap{position:absolute;left:65px;top:81px;width:227px;height:96.8px;border-radius:6px;overflow:hidden}
+.t{position:absolute;line-height:1;white-space:nowrap}
+/* Status-Leiste */
+.time{left:21.5px;top:12.2px;font:600 15px/1 Inter,-apple-system,"SF Pro Text",Roboto,Arial,sans-serif;color:#000;letter-spacing:-1px}
+.island{left:112px;top:12px;width:75px;height:22px;border-radius:11px;background:#0c0c0c}
+.island i{position:absolute;left:60.5px;top:7px;width:8px;height:8px;border-radius:50%;background:radial-gradient(circle,#0a0a2a 25%,#26357a 60%,#121212 100%)}
+.signal{left:213px;top:14px;width:18px;height:11px}
+.wifi{left:236px;top:14.5px;width:13px;height:9.5px}
+.battery{left:254px;top:15px;width:21.5px;height:10.5px;border-radius:3.5px;background:#111;color:#fff;font:700 8.4px/10.5px Inter,-apple-system,Roboto,Arial,sans-serif;text-align:center;letter-spacing:-.1px}
+.battip{left:276.3px;top:18.3px;width:1.6px;height:4px;border-radius:0 1px 1px 0;background:#c8c8c8}
+/* Kopfzeile */
+.round{width:35px;height:35px;top:45px;border-radius:50%;background:#fff;box-shadow:0 0 10px rgba(0,0,0,.065);display:flex;align-items:center;justify-content:center}
+.hicon{stroke:#111;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.title{left:49.5px;top:51.5px;font:700 12.5px/1 Roboto,Arial,sans-serif;color:#000}
+.mail{left:49.5px;top:64.6px;font:400 10px/1 Roboto,Arial,sans-serif;color:#a2a2a2}
+.search{left:5px;top:89px;width:284px;height:32px;border-radius:16px;background:#fdfdfd;box-shadow:0 0 10px rgba(0,0,0,.06)}
+.search .sicon{position:absolute;left:10px;top:10px;width:12px;height:12px}
+.signal svg,.wifi svg,.sicon svg,.navicon svg{display:block}
+.search span{left:30px;top:11px;font:400 13px/1 Roboto,Arial,sans-serif;color:#6e6e6e}
+.sline{left:4px;top:133px;width:286px;height:2px;background:#e8e8e8}
+/* Mailliste */
+.row{position:absolute;left:0;width:297.5px}
+.div{position:absolute;left:17.5px;right:0;bottom:0;height:1px;background:#ececec}
+.avatar{position:absolute;left:16.5px;width:33px;height:33px;border-radius:50%;object-fit:cover;display:flex;align-items:center;justify-content:center;color:#fff;font:700 12.5px/33px Roboto,Arial,sans-serif;text-align:center;background:#B8DDFD;overflow:hidden}
+.nl{position:absolute;left:59.5px;height:14px;max-width:198px;display:flex;align-items:center;white-space:nowrap}
+.sender{font:700 14px/14px Roboto,Arial,sans-serif;color:#000;min-width:0;flex:0 1 auto;overflow:hidden;white-space:nowrap}
+.seal{width:13px;height:13px;flex:0 0 13px;margin-left:4.5px;object-fit:contain}
+.sj,.pr{position:absolute;left:59.5px;width:204px;height:12.3px;font:400 12.3px/12.3px Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden}
+.sj{color:#151515}
+.sj.unread{font-weight:700;color:#000}
+.pr{color:#a0a0a0}
+.tm{position:absolute;right:9.5px;font:400 9.8px/1 Roboto,Arial,sans-serif;color:#a3a3a3}
+.pwrap{position:absolute;left:57px;top:64px;width:216px;height:91px;border-radius:3px;overflow:hidden}
 .preview{width:100%;height:100%;object-fit:cover;display:block}
-.placeholder{background:#ff00e8;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px}
-.fade{left:0;top:598px;width:316px;height:42px;background:linear-gradient(to bottom,rgba(255,255,255,0),rgba(255,255,255,.95))}
-.nav{left:10px;top:638px;width:292px;height:50px;border-radius:25px;background:#fffffe;box-shadow:0 2px 14px rgba(0,0,0,.10)}
-.navhl{left:13px;top:641px;width:62px;height:43px;border-radius:22px;background:#ededec}
-.navitem{position:absolute;top:641px;width:56px;height:43px;display:flex;flex-direction:column;align-items:center;padding-top:6px;gap:1.5px;font:700 9.6px/11px Roboto,Arial,sans-serif;color:#222;letter-spacing:-.1px}
-.navitem svg{width:21px;height:21px;display:block}
-.navitem.active{color:#2f6fc0}
-.badge{left:52px;top:642px;width:17px;height:17px;border-radius:50%;background:#cc2a22;color:#fff;font:700 10px/17px Roboto,Arial,sans-serif;text-align:center}
-.home{left:107px;top:694px;width:103px;height:4px;border-radius:2px;background:#111}
+.placeholder{background:#e1002d;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px}
+/* Navigation */
+.dock{left:0;top:586px;width:297.5px;height:77px;background:linear-gradient(to bottom,rgba(255,255,255,0) 0,#f4f4f4 17px,#efefef 100%)}
+.nav{left:8.5px;top:603px;width:277px;height:48px;border-radius:24px;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.05)}
+.navhl{left:11.5px;top:606px;width:57.5px;height:43px;border-radius:21.5px;background:#eeeeed}
+.navicon{position:absolute;top:612px}
+.navlabel{position:absolute;top:634.8px;width:60px;margin-left:-30px;text-align:center;font:500 8.6px/1 Roboto,Arial,sans-serif;color:#262626;letter-spacing:-.05px}
+.navlabel.active{color:#2f6fbf}
+.home{left:100px;top:653px;width:98px;height:4px;border-radius:2px;background:#111}
 .downloadbar{margin-top:12px;text-align:center}
 .downloadbtn{border:1px solid #777;background:#fff;color:#111;border-radius:6px;padding:9px 14px;font:600 13px Arial,sans-serif;cursor:pointer}
 .downloadbtn:hover{background:#f4f4f4}
 </style></head><body><div class="stage"><div class="phonewrap">
-<div class="sidebtn" style="left:0;top:130px;width:4px;height:22px"></div>
-<div class="sidebtn" style="left:0;top:178px;width:4px;height:46px"></div>
-<div class="sidebtn" style="left:0;top:242px;width:4px;height:46px"></div>
-<div class="sidebtn" style="left:348px;top:215px;width:5px;height:73px"></div>
+<div class="sidebtn" style="left:4px;top:129px;width:5px;height:22px"></div>
+<div class="sidebtn" style="left:4px;top:174px;width:5px;height:44px"></div>
+<div class="sidebtn" style="left:4px;top:235px;width:5px;height:44px"></div>
+<div class="sidebtn" style="left:331.5px;top:208px;width:6px;height:71px"></div>
 <div class="phone"><div class="l1"></div><div class="l2"></div><div class="l3"></div><div class="bezel"></div>
 <div class="screen">
-<span class="abs time" id="now">10:03</span>
+<span class="abs time" id="now">09:24</span>
 <span class="abs island"><i></i></span>
-<span class="abs signal"><i></i><i></i><i></i><i></i></span>
-<svg class="abs wifi" viewBox="0 0 17 12" aria-label="WLAN"><g fill="none" stroke="#000" stroke-width="2" stroke-linecap="round"><path d="M2.7 5.2A8.2 8.2 0 0 1 14.3 5.2"/><path d="M4.9 7.5A5.1 5.1 0 0 1 12.1 7.5"/></g><path d="M8.5 11.2 6.3 9A3.1 3.1 0 0 1 10.7 9Z" fill="#000" stroke="#000" stroke-width="1" stroke-linejoin="round"/></svg>
-<span class="abs battery"></span>
-<span class="abs round" style="left:6px"><svg class="hicon" viewBox="0 0 24 24"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg></span>
-<span class="abs title">Posteingang</span><span class="abs mail">trusteddialog01@gmx.net</span>
-<span class="abs round" style="left:225px"><svg class="hicon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.4 12.2 2.5 2.5 4.8-5.2"/></svg></span>
-<span class="abs round" style="left:270px"><svg class="hicon" viewBox="0 0 24 24"><path d="M11 4H6.5A2.5 2.5 0 0 0 4 6.5v11A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V13"/><path d="M18.4 2.8a1.9 1.9 0 0 1 2.7 2.7L12 14.6l-3.8 1 1-3.8z"/></svg></span>
-<div class="abs search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 5 5"/></svg>Suchen</div>
-<span class="abs hline" style="top:141px;background:#e6e6e6"></span>
-<span class="abs dots"><i></i><i></i><i></i></span><span class="abs recv">E-Mails empfangen</span>
-<span class="abs hline" style="top:173px;background:#ececec"></span>
-<div class="abs list">
-<div class="row td"><div>__AV__</div><div class="senderline"><span class="sender">__SENDER__</span>__SEAL__</div><div class="subject">__SUBJECT__</div><div class="pre">__PRE__</div><div class="rtime" data-off="-3"></div><div class="pwrap">__PV__</div></div>
-<div class="row"><span class="avatar">OH</span><div class="senderline"><span class="sender">Otto Holler</span></div><div class="subject">Gewünschte Bilder</div><div class="pre">Hallo zusammen, anbei findet Ihr die…</div><div class="rtime" data-off="-15"></div></div>
-<div class="row"><img class="avatar" src="__GMXLOGO__" alt="GMX"><div class="senderline"><span class="sender">GMX Magazin</span>__SEAL__</div><div class="subject">Traumhaus auf Föhr zu gewinnen: 8…</div><div class="pre">Jetzt Lose bei GMX Lotto sichern! W…</div><div class="rtime" data-off="-34"></div></div>
-<div class="row"><span class="avatar">SW</span><div class="senderline"><span class="sender">Shopping World</span></div><div class="subject">Neue Deals am Wochenende</div><div class="pre">Jetzt entdecken</div><div class="rtime" data-off="-47"></div></div>
-<div class="row last"><span class="avatar">FF</span><div class="senderline"><span class="sender">Fred Fritt</span></div><div class="subject">Klassentreffen</div><div class="pre">Hallo zusammen, vielen Dank für das to…</div><div class="rtime" data-off="-59"></div></div>
-</div>
-<div class="abs fade"></div>
+<span class="abs signal"><svg width="18" height="11" viewBox="0 0 18 11" aria-label="Mobilfunk"><rect x="1.2" y="6.2" width="2.7" height="4.5" rx=".7" fill="#111"/><rect x="5.8" y="4.7" width="2.7" height="6" rx=".7" fill="#c6c6c6"/><rect x="10.4" y="2.9" width="2.7" height="7.8" rx=".7" fill="#c6c6c6"/><rect x="15" y="1" width="2.7" height="9.7" rx=".7" fill="#c6c6c6"/></svg></span>
+<span class="abs wifi"><svg width="13" height="9.5" viewBox="0 0 13 9.5" aria-label="WLAN"><path d="M1 3.6a7.9 7.9 0 0 1 11 0" fill="none" stroke="#c9c9c9" stroke-width="1.7" stroke-linecap="round"/><path d="M3.1 5.7a4.9 4.9 0 0 1 6.8 0" fill="none" stroke="#000" stroke-width="1.7" stroke-linecap="round"/><path d="M6.5 9.1 4.9 7.5a2.3 2.3 0 0 1 3.2 0z" fill="#000" stroke="#000" stroke-width=".9" stroke-linejoin="round"/></svg></span>
+<span class="abs battery">93</span><span class="abs battip"></span>
+<span class="abs round" style="left:3px"><svg class="hicon" width="16" height="16" viewBox="0 0 16 16"><path d="M11 1.6 4.6 8l6.4 6.4"/></svg></span>
+<span class="t title">Posteingang</span><span class="t mail">trusteddialog99@gmx.net</span>
+<span class="abs round" style="left:210.5px"><svg class="hicon" width="18" height="18" viewBox="0 0 18 18" style="stroke-width:1.7"><circle cx="9" cy="9" r="7.4"/><path d="m5.9 9.2 2.1 2.1 4.1-4.4"/></svg></span>
+<span class="abs round" style="left:255px"><svg width="19" height="19" viewBox="0 0 19 19"><path d="M8.5 3.2H4.2A1.7 1.7 0 0 0 2.5 4.9v9.9a1.7 1.7 0 0 0 1.7 1.7h9.9a1.7 1.7 0 0 0 1.7-1.7v-4.3" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round"/><path d="M14.6 1.7a1.6 1.6 0 0 1 2.3 2.3l-7.2 7.2-3.2.9.9-3.2z" fill="#111"/></svg></span>
+<div class="abs search"><span class="sicon"><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="5" cy="5" r="4" fill="none" stroke="#111" stroke-width="1.6"/><path d="m8 8 3.2 3.2" stroke="#111" stroke-width="1.7" stroke-linecap="round"/></svg></span><span class="t">Suchen</span></div>
+<span class="abs sline"></span>
+<div class="row" style="top:134px;height:169px">__AV__<div class="nl" style="top:9.2px"><span class="sender fit">__SENDER__</span>__SEAL__</div><div class="tm" style="top:10.7px" data-off="-3"></div><div class="sj unread fit" style="top:27.6px">__SUBJECT__</div><div class="pr fit" style="top:44.6px">__PRE__</div><div class="pwrap">__PV__</div><div class="div"></div></div>
+<div class="row" style="top:303px;height:58.5px"><span class="avatar" style="top:10px">OH</span><div class="nl" style="top:15.2px"><span class="sender">Otto Holler</span></div><div class="tm" style="top:14.7px" data-off="-23"></div><div class="sj" style="top:33.6px">Gewünschte Bilder</div><div class="div"></div></div>
+<div class="row" style="top:361.5px;height:72px"><span class="avatar" style="top:9.5px">FF</span><div class="nl" style="top:12.7px"><span class="sender">Fred Fritt</span></div><div class="tm" style="top:15.2px" data-off="-69"></div><div class="sj" style="top:30.1px">Klassentreffen</div><div class="pr" style="top:48.1px">Schön war es!</div><div class="div"></div></div>
+<div class="row" style="top:433.5px;height:72.5px"><img class="avatar" style="top:9.5px;background:#1d72e8" src="__GMXLOGO__" alt="GMX"><div class="nl" style="top:13.7px"><span class="sender">GMX Magazin</span>__SEAL__</div><div class="tm" style="top:15.2px" data-off="-117"></div><div class="sj fit" style="top:31.1px">Traumhaus auf Föhr zu gewinnen: 8 Zimmer, Meerblick</div><div class="pr fit" style="top:49.1px">Jetzt Lose bei GMX Lotto sichern! Wer jetzt mitspielt …</div><div class="div"></div></div>
+<div class="row" style="top:506px;height:72px"><span class="avatar" style="top:8px">SW</span><div class="nl" style="top:13.2px"><span class="sender">Shopping World</span></div><div class="tm" style="top:14.7px" data-off="-145"></div><div class="sj" style="top:30.6px">Neue Deals am Wochenende</div><div class="pr" style="top:47.6px">Jetzt entdecken</div><div class="div"></div></div>
+<div class="abs dock"></div>
 <div class="abs nav"></div><div class="abs navhl"></div>
-<div class="navitem active" style="left:16px"><svg viewBox="0 0 24 24"><rect x="1.5" y="4.5" width="21" height="15" fill="#3a78c8"/><path d="M1.5 5.5 12 13l10.5-7.5M1.5 19l7.8-7M22.5 19l-7.8-7" fill="none" stroke="#fff" stroke-width="1.5"/></svg>E-Mail</div>
-<div class="navitem" style="left:72px"><svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18z" fill="#111"/></svg>Dateien</div>
-<div class="navitem" style="left:127px"><svg viewBox="0 0 24 24"><path d="M3 8.5v10A2.5 2.5 0 0 0 5.5 21H15" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round"/><rect x="6.5" y="3" width="15" height="14" rx="2" fill="#111"/><path d="m8.5 14.5 3-3.6 2.2 2.5 2-2.2 3 3.3z" fill="#fff"/><circle cx="17.5" cy="7" r="1.4" fill="#fff"/></svg>Fotos</div>
-<div class="navitem" style="left:183px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.5" fill="#111"/><polygon points="__STAR_L__" fill="#fff"/><polygon points="__STAR_R__" fill="#fff"/><path d="M6.2 13.6h11.6a5.8 5.8 0 0 1-11.6 0z" fill="#fff"/></svg>Vorteile</div>
-<div class="navitem" style="left:239px"><svg viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="17" rx="1.5" fill="#111"/><rect x="7" y="6.5" width="12" height="3" fill="none" stroke="#fff" stroke-width="1"/><path d="M7 12.5h4.5M7 15.5h4.5" stroke="#fff" stroke-width="1.2"/><rect x="13.5" y="11.5" width="5.5" height="5" fill="none" stroke="#fff" stroke-width="1"/><path d="M4.8 7v10" stroke="#fff" stroke-width="1"/></svg>News</div>
-<span class="abs badge">4</span>
+<span class="navicon" style="left:31px;top:614px"><svg width="18" height="15" viewBox="0 0 18 15"><rect width="18" height="15" fill="#1667c7"/><path d="M.6 .9 9 8l8.4-7.1M.6 14.2l6.3-6.6M17.4 14.2l-6.3-6.6" fill="none" stroke="#fff" stroke-width="1.15"/></svg></span>
+<span class="navicon" style="left:86px;top:615px"><svg width="16.5" height="13.5" viewBox="0 0 18 13.5" preserveAspectRatio="none"><path d="M0 1.3C0 .6.5 0 1.2 0h4.7l1.7 1.9h9.2c.7 0 1.2.6 1.2 1.3v9c0 .7-.5 1.3-1.2 1.3H1.2C.5 13.5 0 12.9 0 12.2z" fill="#111"/></svg></span>
+<span class="navicon" style="left:135px;top:613px"><svg width="21" height="19" viewBox="0 0 21 19"><path d="M1.2 5.2v11.6c0 .6.5 1.1 1.1 1.1h11.8" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round"/><rect x="4.6" y=".3" width="15.6" height="14.4" rx="1.3" fill="#111"/><path d="m7.3 11.6 3.1-3.6 2 2.2 1.8-2 3 3.4z" fill="#fff"/><circle cx="16" cy="4.5" r="1.3" fill="#fff"/></svg></span>
+<span class="navicon" style="left:193px;top:617px"><svg width="15" height="11" viewBox="0 0 15 11"><rect x="0" y="7.2" width="2.4" height="3.8" rx=".5" fill="#222"/><rect x="4.2" y="4.8" width="2.4" height="6.2" rx=".5" fill="#222"/><rect x="8.4" y="2.4" width="2.4" height="8.6" rx=".5" fill="#222"/><rect x="12.6" y="0" width="2.4" height="11" rx=".5" fill="#222"/></svg></span>
+<span class="navicon" style="left:243px;top:613px"><svg width="19" height="17" viewBox="0 0 19 17"><rect x="0" y="0" width="19" height="17" rx="1.2" fill="#111"/><path d="M3 2.6v12" stroke="#fff" stroke-width="1"/><rect x="5.3" y="2.7" width="11" height="2.8" fill="none" stroke="#fff" stroke-width=".95"/><path d="M5.3 8.2h4.4M5.3 11.4h4.4" stroke="#fff" stroke-width="1.1"/><rect x="11.4" y="7.4" width="4.9" height="4.8" fill="none" stroke="#fff" stroke-width=".95"/></svg></span>
+<span class="navlabel active" style="left:40.5px">E-Mail</span>
+<span class="navlabel" style="left:93.5px">Dateien</span>
+<span class="navlabel" style="left:146.5px">Fotos</span>
+<span class="navlabel" style="left:200.5px">Mobile</span>
+<span class="navlabel" style="left:252.5px">News</span>
 <div class="abs home"></div>
 </div></div></div>
 <div class="downloadbar"><button class="downloadbtn" onclick="downloadPreview()">GMX-Vorschau als PNG herunterladen</button></div>
@@ -888,22 +1189,38 @@ html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-
 const p=n=>String(n).padStart(2,'0'),fmt=d=>p(d.getHours())+':'+p(d.getMinutes());
 function tick(){let n=new Date();document.getElementById('now').textContent=fmt(n);document.querySelectorAll('[data-off]').forEach(x=>x.textContent=fmt(new Date(n.getTime()+Number(x.dataset.off)*60000)))}
 tick();setInterval(tick,30000);
-async function svgAvatarToPngImmediately(){
- const img=document.getElementById('uploaded-avatar');
- if(!img || img.dataset.isSvg!=='true') return;
- await new Promise(resolve=>{if(img.complete) resolve(); else {img.onload=resolve;img.onerror=resolve;}});
- const source=new Image();
- await new Promise((resolve,reject)=>{source.onload=resolve;source.onerror=reject;source.src=img.currentSrc||img.src;});
- const size=256;
- const canvas=document.createElement('canvas');canvas.width=size;canvas.height=size;
- const ctx=canvas.getContext('2d');ctx.clearRect(0,0,size,size);
- const sw=source.naturalWidth||size,sh=source.naturalHeight||size;
- const scale=Math.max(size/sw,size/sh),dw=sw*scale,dh=sh*scale;
- ctx.drawImage(source,(size-dw)/2,(size-dh)/2,dw,dh);
- img.src=canvas.toDataURL('image/png');
- img.removeAttribute('data-is-svg');
+/* Zu lange Texte pixelgenau mit „…“ kürzen (wie in der GMX-App). Beim Absender bleibt das Siegel dadurch immer sichtbar. */
+function fitText(el){
+ if(el.dataset.full===undefined) el.dataset.full=el.textContent;
+ const full=el.dataset.full; el.textContent=full;
+ const fits=()=>el.scrollWidth<=el.clientWidth+.5;
+ if(fits()) return;
+ let lo=0,hi=full.length;
+ while(lo<hi){const mid=(lo+hi+1)>>1;el.textContent=full.slice(0,mid).trimEnd()+'…';if(fits()) lo=mid; else hi=mid-1;}
+ el.textContent=full.slice(0,lo).trimEnd()+'…';
 }
-svgAvatarToPngImmediately().catch(err=>console.warn('SVG-to-PNG conversion failed',err));
+function fitAll(){document.querySelectorAll('.fit').forEach(fitText)}
+fitAll();
+if(document.fonts&&document.fonts.ready) document.fonts.ready.then(fitAll);
+/* Avatar der tD-Mail: SVG/PNG auf den gewählten Hintergrund (Standard Weiß) legen und als PNG fixieren. */
+async function rasterizeTdAvatar(){
+ const img=document.getElementById('td-avatar');
+ if(!img) return;
+ const source=new Image();
+ await new Promise((resolve,reject)=>{source.onload=resolve;source.onerror=reject;source.src=img.dataset.src;});
+ const size=264,canvas=document.createElement('canvas');canvas.width=size;canvas.height=size;
+ const ctx=canvas.getContext('2d');
+ ctx.fillStyle=img.dataset.bg||'#ffffff';ctx.fillRect(0,0,size,size);
+ const pad=size*Math.max(0,Math.min(.4,Number(img.dataset.pad)||0)),inner=size-2*pad;
+ const sw=source.naturalWidth||size,sh=source.naturalHeight||size;
+ const scale=img.dataset.fit==='cover'?Math.max(inner/sw,inner/sh):Math.min(inner/sw,inner/sh);
+ const dw=sw*scale,dh=sh*scale;
+ ctx.imageSmoothingQuality='high';
+ ctx.drawImage(source,(size-dw)/2,(size-dh)/2,dw,dh);
+ img.style.padding='0';img.style.objectFit='cover';
+ img.src=canvas.toDataURL('image/png');
+}
+rasterizeTdAvatar().catch(err=>console.warn('Avatar konnte nicht in PNG umgewandelt werden',err));
 async function downloadPreview(){
  const button=document.querySelector('.downloadbtn');
  const phone=document.querySelector('.phonewrap');
@@ -911,16 +1228,16 @@ async function downloadPreview(){
  try{
   button.disabled=true;button.textContent='PNG wird erstellt…';
   if(typeof html2canvas==='undefined') throw new Error('html2canvas konnte nicht geladen werden');
-  await document.fonts.ready;
+  await document.fonts.ready;fitAll();
   await Promise.all(Array.from(phone.querySelectorAll('img')).map(img=>img.complete ? Promise.resolve() : new Promise(resolve=>{img.onload=resolve;img.onerror=resolve;})));
   const canvas=await html2canvas(phone,{
    backgroundColor:null,
-   scale:2,
+   scale:3,
    useCORS:true,
    allowTaint:false,
    logging:false,
-   width:354,
-   height:732,
+   width:344,
+   height:701,
    scrollX:0,
    scrollY:0,
    onclone:(doc)=>{
@@ -935,9 +1252,9 @@ async function downloadPreview(){
      }
     });
     doc.querySelectorAll('img.avatar').forEach(img=>{
-     img.style.width='36px';img.style.height='36px';
-     img.style.minWidth='36px';img.style.minHeight='36px';
-     img.style.maxWidth='36px';img.style.maxHeight='36px';
+     img.style.width='33px';img.style.height='33px';
+     img.style.minWidth='33px';img.style.minHeight='33px';
+     img.style.maxWidth='33px';img.style.maxHeight='33px';
      img.style.borderRadius='50%';img.style.objectFit='cover';
      img.style.objectPosition='center center';img.style.display='block';img.style.visibility='visible';
     });
@@ -960,13 +1277,48 @@ async function downloadPreview(){
 }
 </script></body></html>'''
 
-H = PHONE_TEMPLATE
-for token, value in {'__AV__': av, '__PV__': pv, '__SEAL__': seal, '__SENDER__': sender, '__SUBJECT__': subject,
-                     '__PRE__': pre, '__GMXLOGO__': GMX_LOGO, '__DLSENDER__': download_sender,
-                     '__STAR_L__': star_points(8, 9.4, 2.9, 1.2), '__STAR_R__': star_points(16, 9.4, 2.9, 1.2)}.items():
-    H = H.replace(token, value)
+
+def build_phone_html(sender_name, subject_text, preheader_text, avatar_src='', avatar_bg=AVATAR_BG_DEFAULT,
+                     avatar_fit='contain', avatar_pad=0.0, fallback_color=AVATAR_DEFAULT, preview_src=''):
+    """Erzeugt das GMX-Smartphone-Mockup (HTML) für die Live-Vorschau und den PNG-Export."""
+    bg = e(avatar_bg or AVATAR_BG_DEFAULT)
+    letters = e(''.join(x[0] for x in (sender_name or '').split()[:2]).upper() or 'M')
+    if avatar_src:
+        fit = 'cover' if avatar_fit == 'cover' else 'contain'
+        pad_px = round(33 * avatar_pad, 2)
+        av = (f'<img class="avatar" id="td-avatar" style="top:6px;background:{bg};object-fit:{fit};padding:{pad_px}px" '
+              f'src="{avatar_src}" data-src="{avatar_src}" data-bg="{bg}" data-fit="{fit}" data-pad="{avatar_pad}" alt="">')
+    else:
+        av = f'<span class="avatar" style="top:6px;background:{e(fallback_color)}">{letters}</span>'
+    pv = f'<img class="preview" src="{preview_src}">' if preview_src else '<div class="preview placeholder">Bild einfügen</div>'
+    seal = f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">'
+    download_sender = json.dumps(sender_name or 'Absender', ensure_ascii=False).replace('<', '\\u003c')
+    out = PHONE_TEMPLATE
+    for token, value in {'__AV__': av, '__PV__': pv, '__SEAL__': seal, '__SENDER__': display_text(sender_name) or 'Marke',
+                         '__SUBJECT__': display_text(subject_text), '__PRE__': display_text(preheader_text),
+                         '__GMXLOGO__': GMX_LOGO, '__DLSENDER__': download_sender}.items():
+        out = out.replace(token, value)
+    return out
+
+
+if af:
+    uploaded = avatar_data_uri(af.getvalue())
+    avatar_src = uploaded[0] if uploaded else uri(af)
+elif st.session_state.avatar_options and 0 <= st.session_state.avatar_choice < len(st.session_state.avatar_options):
+    avatar_src = st.session_state.avatar_options[st.session_state.avatar_choice]['src']
+else:
+    avatar_src = ''
+psrc = uri(pf) if pf else ('data:image/png;base64,' + base64.b64encode(st.session_state.generated_preview).decode()
+                           if st.session_state.generated_preview else '')
+H = build_phone_html(st.session_state.sender, st.session_state.subject, st.session_state.preheader, avatar_src,
+                     st.session_state.avatar_bg, 'cover' if st.session_state.avatar_fit == 'Füllend' else 'contain',
+                     st.session_state.avatar_pad / 100, st.session_state.color, psrc)
 with r:
     st.subheader('3. GMX Live-Vorschau')
     st.caption('Smartphone · GMX.DE · iOS')
-    components.html(H, height=810, scrolling=False)
-st.caption('Echtes trustedDialog SVG-Siegel · SVG-Avatar-Upload · Live-Zeit mit früheren Mailzeiten · Maße nach GMX-App-Vorlage')
+    html_component = getattr(components, 'html', None)   # in neueren Streamlit-Versionen abgekündigt
+    if html_component is not None:
+        html_component(H, height=770, scrolling=False)
+    else:
+        st.iframe(H, height=770)
+st.caption('Echtes trustedDialog SVG-Siegel · Avatar-Auswahl aus der Website · Live-Zeit mit früheren Mailzeiten · Maße nach GMX-App-Vorlage (344 × 701 px)')

@@ -1,30 +1,40 @@
 # trustedDialog Preview Builder
 
-Basis: bereitgestellte `app.py`. Unverändert geblieben sind die Avatar-Verarbeitung (SVG -> PNG im Browser),
-der PNG-Export-Block für `img.preview` (html2canvas, Skalierung 2) sowie die Feldlängen und Textlogik.
+Streamlit-App: Domain eingeben → Absender, Betreff, Preview-Text, Avatar und tD-Preview-Grafik werden vorgeschlagen →
+Live-Vorschau im GMX-App-Mockup (iOS) → Export als PNG.
 
-## Änderungen
+## Änderungen in dieser Version
 
-### 1. Mobile-Device-Mockup (Maße aus der Vorlage 373 x 755 px abgemessen)
-- Gerät 344 x 732 px, Display 316 x 706 px, mehrschichtiger Rahmen (Rand, Highlight, Silber, Bezel) und Seitentasten.
-- Status-Leiste: Uhrzeit, Dynamic Island mit Linse, vier graue Signalpunkte, WLAN-Symbol, Batterie als Umriss mit Füllung und Pol (vorher: schwarze Pille mit "93").
-- Header, Suchfeld, Trennlinien, "E-Mails empfangen" mit drei Punkten: Position und Größe wie in der Vorlage.
-- Zeilen: Zeilenhöhe 92,5 px (vorher 78 px), Avatar 36 px, Bildbereich 227 x 96,8 px mit 6 px Radius, Trennlinien ab der Avatarmitte.
-- Platzhalter-Avatare in `#8ea8ce` mit weißen Initialen (vorher `#b8ddfd` mit blauen Initialen); der Farbwähler "Fallback-Avatarfarbe" wirkt jetzt tatsächlich.
-- Navigation: Pille mit aktivem E-Mail-Tab, rotem Badge und den Einträgen E-Mail, Dateien, Fotos, **Vorteile** (vorher "Mobil"), News; Home-Indikator.
-- Weißer Verlauf über der Liste vor der Navigation, wie in der Vorlage.
+### 1. Smartphone-Mockup nach neuer Vorlage (344 × 701 px, 1:1 vermessen)
+- Gerät, Rahmen, Seitentasten und Display (297,5 × 662,5 px, Radius 42 px) exakt nach Vorlage.
+- **Status-Leiste:** Uhrzeit, Dynamic Island, Mobilfunk-Balken (1 schwarz, 3 grau), WLAN, Batterie als schwarze Pille mit „93“.
+- **Kopfzeile:** Posteingang / trusteddialog99@gmx.net, runde Buttons, Suchfeld. „E-Mails empfangen“ entfällt (nicht in der Vorlage).
+- **Mailliste:** Position 1 = trustedDialog-Preview, danach 4 Mails wie in der Vorlage
+  (Otto Holler, Fred Fritt, GMX Magazin, Shopping World). Zeilenhöhen, Avatar (33 px), Schriftgrößen und Grundlinien
+  stammen aus der Vorlage (Abweichung ≤ 1 px).
+- **Footer:** 5 Symbole – E-Mail (aktiv), Dateien, Fotos, Mobile, News; Home-Indikator.
+- PNG-Export jetzt in 3-facher Auflösung (1032 × 2103 px). Alle Icons sind so aufgebaut, dass html2canvas sie mit exportiert.
 
-### 2. tD-Preview-Grafik (1088 x 464 px)
-- **Schrift:** robuste Suche nach Roboto/Inter/Liberation/Arial/DejaVu; skalierbarer Fallback. Vorher führte ein falscher Pfad (`liberation2`) ohne DejaVu zur winzigen Bitmap-Schrift.
-- **Skalierung:** Text wird nach Breite **und** Höhe des Textfelds eingepasst; Hauptzahl ist immer das größte Element.
-- **Supersampling (2x):** glatte Kanten und Schrift.
-- **CI:** Markenfarbe aus Logo, `theme-color`, CSS-Variablen und Häufigkeit im Quelltext (graue/weiße Töne ausgeschlossen, ähnliche Töne zusammengefasst). Das Logo der Marke wird in die Grafik gesetzt (weißer Chip, falls es auf der Markenfarbe untergeht), sonst der Markenname.
-- **Lesbarkeit:** Textfarbe (weiß/schwarz) nach WCAG-Kontrast zur Markenfarbe, Button invertiert.
-- **Komposition:** Textfläche ca. 40 %, Motiv ca. 55-60 %, Motiv mit Fokus-Zuschnitt statt starrer Bildmitte, kein Text auf dem Motiv, ein Button mit gezeichnetem Pfeil.
-- **KI-Kennzeichnung:** kleines Overlay "KI-generiert" an der äußeren Motivecke (nur bei generierten Bildern).
-- **Botschaft:** erfindet kein "BIS ZU" mehr; erkennt Prozent, Euro, Gratis-Versand, Sale.
-- **Bedienung:** Expander "Grafik-Einstellungen" (Headline, CTA, Markenfarbe + erkannte Farben, gespiegelt); die Grafik aktualisiert sich live.
-- **Bugfix Motivauswahl:** `og:image` wurde zuvor als String in eine Tupel-Sortierung gemischt und lieferte nur ein einzelnes Zeichen. Transparente PNGs werden auf Weiß gelegt, zu kleine Bilder übersprungen.
+### 2. Absender = Markenname
+- Neue Markenerkennung (`detect_brand`): og:site_name, application-name, JSON-LD (Organization/Brand/Store),
+  Logo-Alt-Texte, Titel-Fragmente und Copyright-Zeile werden gewichtet und gegen die Domain geprüft.
+  Slogans wie „Mode online kaufen“ landen dadurch nicht mehr im Absender; Rechtsformen (GmbH, AG …),
+  „Online-Shop“ und Domain-Endungen werden entfernt.
+- Zu lange Namen werden im Browser **pixelgenau mit „…“ gekürzt**, damit das trustedDialog-Siegel und die Uhrzeit immer
+  sichtbar bleiben (gilt auch für Betreff und Preview-Text, wie in der GMX-App).
+
+### 3. Avatare
+- Fallback-Avatarfarbe (Initialen): **#B8DDFD**.
+- Avatar der trustedDialog-Mail: Hintergrund standardmäßig **Weiß** (einstellbar), damit transparente SVG/PNG-Logos
+  korrekt aussehen. SVGs werden im Browser auf diesen Hintergrund gelegt und als PNG fixiert.
+- **Auswahl aus gefundenen Grafiken:** App-Icons, Favicons (inkl. SVG/ICO), Web-App-Manifest-Icons, Kachel-Icon,
+  JSON-LD-Logo, Logo-Bilder und Inline-SVG-Logos der Seite. Vorschau als Kreis, Auswahl per Liste, „Initialen“ als Option.
+- Darstellung im Kreis: „Eingepasst“ (ganzes Logo sichtbar) oder „Füllend“, plus Innenabstand.
+- Eigener Upload überschreibt weiterhin die Auswahl.
+
+### Unverändert
+- tD-Preview-Grafik (1088 × 464 px), Website-Analyse, Motivauswahl, Markenfarben.
 
 ## Hinweis Schriften
-Auf Streamlit Community Cloud sorgt `packages.txt` für Roboto/Liberation. Lokal können Schriftdateien in einen Ordner `fonts/` neben `app.py` gelegt werden (z. B. `Roboto-Black.ttf`).
+Auf Streamlit Community Cloud sorgt `packages.txt` für Roboto/Liberation. Lokal können Schriftdateien in einen Ordner
+`fonts/` neben `app.py` gelegt werden (z. B. `Roboto-Black.ttf`).
