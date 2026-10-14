@@ -14,7 +14,7 @@ SEAL_URL = 'https://img.ui-portal.de/trusteddialog/trustlogo/trusted-sign_GMX.sv
 GMX_LOGO_URL = 'https://logo.ui-portal.de/td/ab166bef-b456-4e67-984f-72fb64d4a2c6/bo10.svg'
 UA = 'Mozilla/5.0 (compatible; trustedDialog-Preview-Builder/1.0)'
 PREVIEW_SIZE = (1088, 464)
-AVATAR_DEFAULT = '#B8DDFD'  # gewünschte Fallback-Avatarfarbe
+AVATAR_DEFAULT = '#8ea8ce'  # Platzhalter-Avatar laut GMX-Vorlage
 
 
 @st.cache_data(show_spinner=False)
@@ -232,32 +232,14 @@ def rank_brand_colors(scores, logo=None):
     return [key for key, _ in ranked][:8]
 
 
-def clean_brand_name(soup, title, host):
-    """Ermittelt den sichtbaren Markennamen ohne Seitentitel-Zusätze."""
-    candidates = [meta(soup, 'og:site_name', 'application-name', 'apple-mobile-web-app-title')]
-    for tag in soup.find_all('img'):
-        marker = (' '.join(tag.get('class', [])) + ' ' + (tag.get('id') or '')).lower()
-        alt = re.sub(r'\s+', ' ', tag.get('alt') or '').strip()
-        if alt and 'logo' in marker and len(alt) <= 45:
-            candidates.append(re.sub(r'\s+(?:logo|homepage)$', '', alt, flags=re.I).strip())
-    candidates.extend([title, host.split('.')[0]])
-    for candidate in candidates:
-        candidate = re.sub(r'\s+', ' ', candidate or '').strip()
-        candidate = re.split(r'\s*[|–—]\s*', candidate)[0].strip()
-        candidate = re.sub(r'\s+-\s+.*$', '', candidate).strip()
-        candidate = re.sub(r'\s+(?:Online-Shop|Onlineshop|Shop|Deutschland|Germany)$', '', candidate, flags=re.I).strip()
-        if candidate and candidate.lower() not in {'home', 'startseite', 'homepage'}:
-            return candidate
-    return host
-
-
 def analyze_site(value):
     raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000)
     html_text = raw.decode('utf-8', errors='ignore')
     soup = BeautifulSoup(raw, 'html.parser')
     title = meta(soup, 'og:site_name') or (soup.title.get_text(' ', strip=True) if soup.title else '')
     host = (urlparse(final_url).hostname or '').replace('www.', '')
-    brand = clean_brand_name(soup, title, host)
+    brand = re.split(r'\s*[|–—]\s*', title)[0].strip() if title else host.split('.')[0]
+    brand = re.sub(r'\s+-\s+.*$', '', brand).strip() or host
     description = meta(soup, 'og:description', 'description')
     body_text = ' '.join(soup.stripped_strings)
     offers = []
@@ -308,7 +290,7 @@ def analyze_site(value):
     else:
         subject = short('Neuigkeiten von ' + brand)
         preheader = short('Jetzt Vorteile entdecken')
-    return {'url': final_url, 'brand': brand[:80], 'description': description, 'offers': offers,
+    return {'url': final_url, 'brand': short(brand), 'description': description, 'offers': offers,
             'color_scores': color_scores, 'colors': rank_brand_colors(color_scores), 'images': images,
             'logos': logos, 'subject': subject, 'preheader': preheader}
 
@@ -649,7 +631,7 @@ SEAL = remote_data_uri(SEAL_URL)
 GMX_LOGO = remote_data_uri(GMX_LOGO_URL)
 
 for k, v in {'domain': '', 'sender': 'Absender', 'subject': 'Betreff', 'preheader': 'Preview-Text', 'color': AVATAR_DEFAULT,
-             'analysis': None, 'generated_preview': None, 'generated_avatar': '', 'avatar_options': [], 'selected_avatar': '', 'selected_image': '',
+             'analysis': None, 'generated_preview': None, 'generated_avatar': '', 'selected_image': '',
              'source_image': None, 'banner_logo': None, 'brand_color': '#1375d7', 'banner_headline': '',
              'banner_cta': '', 'banner_mirror': False}.items():
     st.session_state.setdefault(k, v)
@@ -684,8 +666,6 @@ if analyze_clicked:
             st.session_state.banner_headline = result['offers'][0] if result['offers'] else result['subject']
             st.session_state.banner_cta = ''
             st.session_state.generated_avatar = ''
-            st.session_state.avatar_options = []
-            st.session_state.selected_avatar = ''
             st.session_state.banner_logo = None
             logo_image = None
             for logo_url in result['logos']:
@@ -693,12 +673,8 @@ if analyze_clicked:
                     raw, _, content_type = safe_fetch(logo_url, 3000000)
                 except Exception:
                     continue
-                avatar_uri = 'data:' + (content_type or 'image/png') + ';base64,' + base64.b64encode(raw).decode()
-                if avatar_uri not in [item['uri'] for item in st.session_state.avatar_options]:
-                    st.session_state.avatar_options.append({'label': f"Logo {len(st.session_state.avatar_options)+1}: {logo_url.split('/')[-1][:45] or 'Website-Grafik'}", 'uri': avatar_uri})
                 if not st.session_state.generated_avatar:
-                    st.session_state.generated_avatar = avatar_uri
-                    st.session_state.selected_avatar = avatar_uri
+                    st.session_state.generated_avatar = 'data:' + (content_type or 'image/png') + ';base64,' + base64.b64encode(raw).decode()
                 if logo_image is None:
                     try:
                         prepared = prepare_logo(image_from_bytes(raw))
@@ -707,6 +683,8 @@ if analyze_clicked:
                             st.session_state.banner_logo = png_data(prepared)
                     except Exception:
                         pass
+                if st.session_state.generated_avatar and logo_image is not None:
+                    break
             ranked = rank_brand_colors(result['color_scores'], logo_image)
             result['colors'] = ranked
             st.session_state.brand_color = ranked[0] if ranked else '#1375d7'
@@ -760,12 +738,6 @@ with l:
     st.text_input('Betreff', key='subject', max_chars=37)
     st.text_input('Preview-Text', key='preheader', max_chars=37)
     st.color_picker('Fallback-Avatarfarbe', key='color')
-    if st.session_state.avatar_options:
-        avatar_uris = [item['uri'] for item in st.session_state.avatar_options]
-        current_index = avatar_uris.index(st.session_state.selected_avatar) if st.session_state.selected_avatar in avatar_uris else 0
-        selected_avatar_index = st.selectbox('Avatar-Grafik von der Website auswählen', range(len(st.session_state.avatar_options)), index=current_index, format_func=lambda i: st.session_state.avatar_options[i]['label'])
-        st.session_state.selected_avatar = st.session_state.avatar_options[selected_avatar_index]['uri']
-        st.session_state.generated_avatar = st.session_state.selected_avatar
     af = st.file_uploader('Avatar / Logo überschreiben', type=['svg', 'png', 'jpg', 'jpeg', 'webp'],
                           help='SVG wird direkt nach dem Upload im Browser in PNG konvertiert und anschließend nur noch als PNG verwendet.')
     pf = st.file_uploader('Preview-Bild überschreiben (1088 × 464 px)', type=['png', 'jpg', 'jpeg', 'webp'])
@@ -790,8 +762,7 @@ with l:
                            file_name=f"trustedDialog_Preview_{re.sub(r'[^A-Za-z0-9._-]+', '_', st.session_state.sender)}_1088x464.png",
                            mime='image/png', use_container_width=True)
 
-sender = e(st.session_state.sender)
-subject, pre = display_text(st.session_state.subject), display_text(st.session_state.preheader)
+sender, subject, pre = display_text(st.session_state.sender), display_text(st.session_state.subject), display_text(st.session_state.preheader)
 download_sender = json.dumps(st.session_state.sender or 'Absender', ensure_ascii=False).replace('<', '\\u003c')
 avsrc = uri(af) if af else st.session_state.generated_avatar
 psrc = uri(pf) if pf else ('data:image/png;base64,' + base64.b64encode(st.session_state.generated_preview).decode() if st.session_state.generated_preview else '')
@@ -826,41 +797,41 @@ html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-
 .bezel{inset:6.5px;border-radius:50px;background:#1a1918}
 .screen{position:absolute;left:14px;top:13px;width:316px;height:706px;overflow:hidden;border-radius:43px;background:#fff;color:#111}
 .abs{position:absolute}
-.time{left:20px;top:10px;height:17px;font:600 13px/17px Inter,-apple-system,"SF Pro Text",Roboto,Arial,sans-serif;color:#000}
-.island{left:119px;top:10px;width:78px;height:21px;border-radius:12px;background:#0b0b0b}
+.time{left:21px;top:11px;height:18px;font:600 15px/18px Inter,-apple-system,"SF Pro Text",Roboto,Arial,sans-serif;color:#000}
+.island{left:117px;top:12px;width:82px;height:23px;border-radius:12px;background:#0b0b0b}
 .island i{position:absolute;right:9px;top:6px;width:11px;height:11px;border-radius:50%;background:radial-gradient(circle,#05051a 30%,#1d2a63 62%,#0b0b0b 100%)}
-.signal{left:246px;top:16px;height:10px;display:flex;align-items:flex-end;gap:1.5px}
-.signal i{width:2.5px;border-radius:1px;background:#111}
-.wifi{left:264px;top:14px;width:14px;height:11px}
-.battery{left:284px;top:14px;width:19px;height:10px;border:1px solid #777;border-radius:3.5px}
+.signal{left:247px;top:22px;height:3px;display:flex;gap:2px}
+.signal i{width:2.6px;height:2.6px;border-radius:50%;background:#c3c3c3}
+.wifi{left:265px;top:15px;width:13px;height:10px}
+.battery{left:284px;top:15px;width:20px;height:10px;border:1px solid #c6c6c6;border-radius:3.5px}
 .battery:before{content:"";position:absolute;left:1.5px;top:1.5px;width:12px;height:5px;border-radius:1.5px;background:#000}
 .battery:after{content:"";position:absolute;right:-3px;top:2.2px;width:1.6px;height:3.4px;border-radius:0 1px 1px 0;background:#c6c6c6}
-.round{width:34px;height:34px;top:36px;border-radius:50%;background:#fff;box-shadow:0 0 12px rgba(0,0,0,.07);display:flex;align-items:center;justify-content:center}
+.round{width:36px;height:36px;top:49px;border-radius:50%;background:#fff;box-shadow:0 0 12px rgba(0,0,0,.07);display:flex;align-items:center;justify-content:center}
 .hicon{width:21px;height:21px;stroke:#111;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.title{left:51px;top:39px;font:700 12px/15px Roboto,Arial,sans-serif;color:#000;white-space:nowrap}
-.mail{left:51px;top:53px;font:400 9px/11px Roboto,Arial,sans-serif;color:#a6a6a6;white-space:nowrap}
-.search{left:7px;top:73px;width:302px;height:31px;border-radius:18px;background:#fdfdfb;box-shadow:0 0 12px rgba(0,0,0,.07);display:flex;align-items:center;padding-left:11px;gap:9px;color:#6f6f6f;font-size:12px}
+.title{left:51px;top:54px;font:700 13px/16px Roboto,Arial,sans-serif;color:#000;white-space:nowrap}
+.mail{left:51px;top:70px;font:400 10px/12px Roboto,Arial,sans-serif;color:#a6a6a6;white-space:nowrap}
+.search{left:6px;top:94px;width:299px;height:35px;border-radius:18px;background:#fdfdfb;box-shadow:0 0 12px rgba(0,0,0,.07);display:flex;align-items:center;padding-left:11px;gap:9px;color:#6f6f6f;font-size:15px}
 .search svg{width:18px;height:18px;stroke:#111;fill:none;stroke-width:2.2;stroke-linecap:round}
-.hline{left:7px;width:302px;height:1px}
-.dots{display:none}
+.hline{left:6px;width:299px;height:1px}
+.dots{left:6px;top:155px;height:4px;display:flex;gap:4px}
 .dots i{width:4px;height:4px;border-radius:50%;background:#3d8ad4}
 .dots i:nth-child(1){opacity:.45}.dots i:nth-child(2){opacity:.75}
-.recv{display:none}
-.list{left:0;top:108px;width:316px}
-.row{position:relative;height:62px}
+.recv{left:43px;top:150px;font:400 11px/14px Roboto,Arial,sans-serif;color:#4a4a4a;white-space:nowrap}
+.list{left:0;top:174px;width:316px}
+.row{position:relative;height:92.5px}
 .row:after{content:"";position:absolute;left:23px;right:0;bottom:0;height:1px;background:#d9d9d9}
 .row.last:after{display:none}
-.row.td{height:184px}
-.avatar{position:absolute;left:20px;top:9px;width:31px;height:31px;border-radius:50%;object-fit:cover;display:flex;align-items:center;justify-content:center;color:#276ca8;font:700 11px/31px Roboto,Arial,sans-serif;text-align:center;background:#B8DDFD}
-.td .avatar{top:10px;background:#fff;color:#276ca8}
-.senderline{position:absolute;left:59px;top:8px;height:18px;display:flex;align-items:center;white-space:nowrap;max-width:205px}
-.sender{font:700 12px/18px Roboto,Arial,sans-serif;color:#000;max-width:155px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;display:block}
-.seal{width:12px;height:12px;flex:0 0 12px;margin-left:4px;object-fit:contain}
-.subject,.pre{top:42px;color:#a3a3a3}
-.subject{top:25px;color:#111}
+.row.td{height:193px}
+.avatar{position:absolute;left:19px;top:10px;width:36px;height:36px;border-radius:50%;object-fit:cover;display:flex;align-items:center;justify-content:center;color:#fff;font:700 13px/36px Roboto,Arial,sans-serif;text-align:center;background:#8ea8ce}
+.td .avatar{top:11px}
+.senderline{position:absolute;left:65px;top:11px;height:20px;display:flex;align-items:center;white-space:nowrap}
+.sender{font:700 14px/20px Roboto,Arial,sans-serif;color:#000;max-width:170px;overflow:hidden;white-space:nowrap}
+.seal{width:14px;height:14px;flex:0 0 14px;margin-left:5px;object-fit:contain}
+.subject,.pre{position:absolute;left:65px;width:239px;height:20px;font:400 14px/20px Roboto,Arial,sans-serif;white-space:nowrap;overflow:hidden}
+.subject{top:32px;color:#111}
 .pre{top:55px;color:#a3a3a3}
-.rtime{position:absolute;right:10px;top:9px;font:400 9px/12px Roboto,Arial,sans-serif;color:#9e9e9e}
-.pwrap{position:absolute;left:59px;top:60px;width:239px;height:108px;border-radius:4px;overflow:hidden}
+.rtime{position:absolute;right:12px;top:14px;font:400 11px/14px Roboto,Arial,sans-serif;color:#9e9e9e}
+.pwrap{position:absolute;left:65px;top:81px;width:227px;height:96.8px;border-radius:6px;overflow:hidden}
 .preview{width:100%;height:100%;object-fit:cover;display:block}
 .placeholder{background:#ff00e8;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px}
 .fade{left:0;top:598px;width:316px;height:42px;background:linear-gradient(to bottom,rgba(255,255,255,0),rgba(255,255,255,.95))}
@@ -891,9 +862,9 @@ html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-
 <span class="abs round" style="left:225px"><svg class="hicon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.4 12.2 2.5 2.5 4.8-5.2"/></svg></span>
 <span class="abs round" style="left:270px"><svg class="hicon" viewBox="0 0 24 24"><path d="M11 4H6.5A2.5 2.5 0 0 0 4 6.5v11A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5V13"/><path d="M18.4 2.8a1.9 1.9 0 0 1 2.7 2.7L12 14.6l-3.8 1 1-3.8z"/></svg></span>
 <div class="abs search"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.4 15.4 5 5"/></svg>Suchen</div>
-<span class="abs hline" style="top:107px;background:#e6e6e6"></span>
+<span class="abs hline" style="top:141px;background:#e6e6e6"></span>
 <span class="abs dots"><i></i><i></i><i></i></span><span class="abs recv">E-Mails empfangen</span>
-<span class="abs hline" style="top:107px;background:#ececec"></span>
+<span class="abs hline" style="top:173px;background:#ececec"></span>
 <div class="abs list">
 <div class="row td"><div>__AV__</div><div class="senderline"><span class="sender">__SENDER__</span>__SEAL__</div><div class="subject">__SUBJECT__</div><div class="pre">__PRE__</div><div class="rtime" data-off="-3"></div><div class="pwrap">__PV__</div></div>
 <div class="row"><span class="avatar">OH</span><div class="senderline"><span class="sender">Otto Holler</span></div><div class="subject">Gewünschte Bilder</div><div class="pre">Hallo zusammen, anbei findet Ihr die…</div><div class="rtime" data-off="-15"></div></div>
@@ -906,7 +877,7 @@ html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-
 <div class="navitem active" style="left:16px"><svg viewBox="0 0 24 24"><rect x="1.5" y="4.5" width="21" height="15" fill="#3a78c8"/><path d="M1.5 5.5 12 13l10.5-7.5M1.5 19l7.8-7M22.5 19l-7.8-7" fill="none" stroke="#fff" stroke-width="1.5"/></svg>E-Mail</div>
 <div class="navitem" style="left:72px"><svg viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18z" fill="#111"/></svg>Dateien</div>
 <div class="navitem" style="left:127px"><svg viewBox="0 0 24 24"><path d="M3 8.5v10A2.5 2.5 0 0 0 5.5 21H15" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round"/><rect x="6.5" y="3" width="15" height="14" rx="2" fill="#111"/><path d="m8.5 14.5 3-3.6 2.2 2.5 2-2.2 3 3.3z" fill="#fff"/><circle cx="17.5" cy="7" r="1.4" fill="#fff"/></svg>Fotos</div>
-<div class="navitem" style="left:183px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.5" fill="#111"/><polygon points="__STAR_L__" fill="#fff"/><polygon points="__STAR_R__" fill="#fff"/><path d="M6.2 13.6h11.6a5.8 5.8 0 0 1-11.6 0z" fill="#fff"/></svg>Mobil</div>
+<div class="navitem" style="left:183px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.5" fill="#111"/><polygon points="__STAR_L__" fill="#fff"/><polygon points="__STAR_R__" fill="#fff"/><path d="M6.2 13.6h11.6a5.8 5.8 0 0 1-11.6 0z" fill="#fff"/></svg>Vorteile</div>
 <div class="navitem" style="left:239px"><svg viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="17" rx="1.5" fill="#111"/><rect x="7" y="6.5" width="12" height="3" fill="none" stroke="#fff" stroke-width="1"/><path d="M7 12.5h4.5M7 15.5h4.5" stroke="#fff" stroke-width="1.2"/><rect x="13.5" y="11.5" width="5.5" height="5" fill="none" stroke="#fff" stroke-width="1"/><path d="M4.8 7v10" stroke="#fff" stroke-width="1"/></svg>News</div>
 <span class="abs badge">4</span>
 <div class="abs home"></div>
@@ -964,9 +935,9 @@ async function downloadPreview(){
      }
     });
     doc.querySelectorAll('img.avatar').forEach(img=>{
-     img.style.width='31px';img.style.height='31px';
-     img.style.minWidth='31px';img.style.minHeight='31px';
-     img.style.maxWidth='31px';img.style.maxHeight='31px';
+     img.style.width='36px';img.style.height='36px';
+     img.style.minWidth='36px';img.style.minHeight='36px';
+     img.style.maxWidth='36px';img.style.maxHeight='36px';
      img.style.borderRadius='50%';img.style.objectFit='cover';
      img.style.objectPosition='center center';img.style.display='block';img.style.visibility='visible';
     });
