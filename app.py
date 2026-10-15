@@ -936,105 +936,116 @@ def apply_palette_choice():
         st.session_state.brand_color = choice
 
 
-st.title('trustedDialog Preview Builder')
-st.caption('Domain eingeben, Vorschläge automatisch erstellen und anschließend direkt bearbeiten.')
+STICKY_CSS = (
+    '<style>'
+    '[data-testid="stColumn"]:has(#td-sticky-anchor),[data-testid="column"]:has(#td-sticky-anchor)'
+    '{position:sticky;top:4rem;align-self:flex-start;z-index:5}'
+    '[data-testid="stColumn"]:has(#td-sticky-anchor) iframe,[data-testid="column"]:has(#td-sticky-anchor) iframe'
+    '{height:calc(100vh - 5rem)!important;min-height:520px}'
+    '[data-testid="stElementContainer"]:has(#td-sticky-anchor),.element-container:has(#td-sticky-anchor){display:none}'
+    '[data-testid="stMainBlockContainer"],.block-container{padding-top:4.25rem!important}'
+    '</style><div id="td-sticky-anchor"></div>')
 
-st.subheader('1. Unternehmen analysieren')
-d1, d2 = st.columns([4, 1])
-with d1:
-    st.text_input('Für welche Domain soll das trustedDialog Preview generiert werden?', key='domain',
-                  placeholder='z. B. www.beispiel.de')
-with d2:
-    st.write('')
-    st.write('')
-    analyze_clicked = st.button('Vorschläge erstellen', type='primary', use_container_width=True)
-if analyze_clicked:
-    try:
-        with st.spinner('Website wird analysiert und die Preview vorbereitet …'):
-            result = analyze_site(st.session_state.domain)
-            st.session_state.analysis = result
-            st.session_state.sender = result['brand']
-            st.session_state.subject = result['subject']
-            st.session_state.preheader = result['preheader']
-            st.session_state.banner_headline = result['offers'][0] if result['offers'] else result['subject']
-            st.session_state.banner_cta = ''
-            st.session_state.avatar_options = load_avatar_options(result['avatar_sources'])
-            st.session_state.avatar_choice = 0 if st.session_state.avatar_options else -1
-            st.session_state.banner_logo = None
-            logo_image = None
-            for logo_url in result['logos']:
+
+left, right = st.columns([1, 2], gap='large')   # links bearbeiten, rechts die sticky Vorschau
+with left:
+    st.title('trustedDialog Preview Builder')
+    st.caption('Domain eingeben, Vorschläge automatisch erstellen und anschließend direkt bearbeiten.')
+
+    st.subheader('1. Unternehmen analysieren')
+    d1, d2 = st.columns([4, 1])
+    with d1:
+        st.text_input('Für welche Domain soll das trustedDialog Preview generiert werden?', key='domain',
+                      placeholder='z. B. www.beispiel.de')
+    with d2:
+        st.write('')
+        st.write('')
+        analyze_clicked = st.button('Vorschläge erstellen', type='primary', use_container_width=True)
+    if analyze_clicked:
+        try:
+            with st.spinner('Website wird analysiert und die Preview vorbereitet …'):
+                result = analyze_site(st.session_state.domain)
+                st.session_state.analysis = result
+                st.session_state.sender = result['brand']
+                st.session_state.subject = result['subject']
+                st.session_state.preheader = result['preheader']
+                st.session_state.banner_headline = result['offers'][0] if result['offers'] else result['subject']
+                st.session_state.banner_cta = ''
+                st.session_state.avatar_options = load_avatar_options(result['avatar_sources'])
+                st.session_state.avatar_choice = 0 if st.session_state.avatar_options else -1
+                st.session_state.banner_logo = None
+                logo_image = None
+                for logo_url in result['logos']:
+                    try:
+                        raw, _, _ = safe_fetch(logo_url, 3000000)
+                        prepared = prepare_logo(image_from_bytes(raw))
+                    except Exception:
+                        continue
+                    if prepared is not None:
+                        logo_image = prepared
+                        st.session_state.banner_logo = png_data(prepared)
+                        break
+                ranked = rank_brand_colors(result['color_scores'], logo_image)
+                result['colors'] = ranked
+                st.session_state.brand_color = ranked[0] if ranked else '#1375d7'
+                st.session_state.source_image = None
+                fallback = None
+                for candidate in result['images']:
+                    try:
+                        selected = image_from_url(candidate)
+                    except Exception:
+                        continue
+                    if fallback is None:
+                        fallback = (candidate, selected)
+                    if usable_motif(selected):
+                        st.session_state.selected_image = candidate
+                        st.session_state.source_image = to_bytes(selected, 'JPEG')
+                        break
+                if st.session_state.source_image is None and fallback is not None:
+                    st.session_state.selected_image = fallback[0]
+                    st.session_state.source_image = to_bytes(fallback[1], 'JPEG')
+            st.success('Vorschläge wurden erstellt. Alle Inhalte können unten überschrieben werden.')
+        except Exception as error:
+            st.error(f'Die Website konnte nicht analysiert werden: {error}')
+
+    analysis = st.session_state.analysis
+    if analysis:
+        with st.expander('Erkannte Website-Informationen', expanded=False):
+            st.write(f"**Marke:** {analysis['brand']}")
+            if analysis['offers']:
+                st.write('**Gefundene Angebots-Hinweise:** ' + ' · '.join(analysis['offers'][:5]))
+            if analysis['description']:
+                st.write('**Beschreibung:** ' + analysis['description'][:350])
+            st.caption('Bitte prüfen Sie die vorgeschlagenen Inhalte und stellen Sie sicher, dass die erforderlichen Bild- und Markenrechte vorliegen.')
+        if analysis['images']:
+            choices = analysis['images']
+            chosen = st.selectbox('Alternatives Website-Motiv', choices,
+                                  index=choices.index(st.session_state.selected_image) if st.session_state.selected_image in choices else 0,
+                                  format_func=lambda x: x.split('/')[-1][:70] or x)
+            if st.button('Ausgewähltes Motiv übernehmen'):
                 try:
-                    raw, _, _ = safe_fetch(logo_url, 3000000)
-                    prepared = prepare_logo(image_from_bytes(raw))
-                except Exception:
-                    continue
-                if prepared is not None:
-                    logo_image = prepared
-                    st.session_state.banner_logo = png_data(prepared)
-                    break
-            ranked = rank_brand_colors(result['color_scores'], logo_image)
-            result['colors'] = ranked
-            st.session_state.brand_color = ranked[0] if ranked else '#1375d7'
-            st.session_state.source_image = None
-            fallback = None
-            for candidate in result['images']:
-                try:
-                    selected = image_from_url(candidate)
-                except Exception:
-                    continue
-                if fallback is None:
-                    fallback = (candidate, selected)
-                if usable_motif(selected):
-                    st.session_state.selected_image = candidate
-                    st.session_state.source_image = to_bytes(selected, 'JPEG')
-                    break
-            if st.session_state.source_image is None and fallback is not None:
-                st.session_state.selected_image = fallback[0]
-                st.session_state.source_image = to_bytes(fallback[1], 'JPEG')
-        st.success('Vorschläge wurden erstellt. Alle Inhalte können unten überschrieben werden.')
-    except Exception as error:
-        st.error(f'Die Website konnte nicht analysiert werden: {error}')
-
-analysis = st.session_state.analysis
-if analysis:
-    with st.expander('Erkannte Website-Informationen', expanded=False):
-        st.write(f"**Marke:** {analysis['brand']}")
-        if analysis['offers']:
-            st.write('**Gefundene Angebots-Hinweise:** ' + ' · '.join(analysis['offers'][:5]))
-        if analysis['description']:
-            st.write('**Beschreibung:** ' + analysis['description'][:350])
-        st.caption('Bitte prüfen Sie die vorgeschlagenen Inhalte und stellen Sie sicher, dass die erforderlichen Bild- und Markenrechte vorliegen.')
-    if analysis['images']:
-        choices = analysis['images']
-        chosen = st.selectbox('Alternatives Website-Motiv', choices,
-                              index=choices.index(st.session_state.selected_image) if st.session_state.selected_image in choices else 0,
-                              format_func=lambda x: x.split('/')[-1][:70] or x)
-        if st.button('Ausgewähltes Motiv übernehmen'):
-            try:
-                img = image_from_url(chosen)
-                st.session_state.selected_image = chosen
-                st.session_state.source_image = to_bytes(img, 'JPEG')
-                st.rerun()
-            except Exception as error:
-                st.error(f'Das Bild konnte nicht übernommen werden: {error}')
+                    img = image_from_url(chosen)
+                    st.session_state.selected_image = chosen
+                    st.session_state.source_image = to_bytes(img, 'JPEG')
+                    st.rerun()
+                except Exception as error:
+                    st.error(f'Das Bild konnte nicht übernommen werden: {error}')
 
 
-def avatar_gallery(options, background):
-    """Kleine Vorschau aller gefundenen Avatar-Grafiken (rund, auf dem gewählten Hintergrund)."""
-    cells = []
-    for index, option in enumerate(options):
-        cells.append(
-            f'<div style="display:flex;flex-direction:column;align-items:center;gap:4px;width:64px">'
-            f'<div style="width:48px;height:48px;border-radius:50%;overflow:hidden;background:{e(background)};'
-            f'box-shadow:0 0 0 1px rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center">'
-            f'<img src="{option["src"]}" style="width:100%;height:100%;object-fit:contain"></div>'
-            f'<span style="font-size:12px;color:#666">{index + 1}</span></div>')
-    return '<div style="display:flex;flex-wrap:wrap;gap:6px 4px;margin:2px 0 6px">' + ''.join(cells) + '</div>'
+    def avatar_gallery(options, background):
+        """Kleine Vorschau aller gefundenen Avatar-Grafiken (rund, auf dem gewählten Hintergrund)."""
+        cells = []
+        for index, option in enumerate(options):
+            cells.append(
+                f'<div style="display:flex;flex-direction:column;align-items:center;gap:4px;width:64px">'
+                f'<div style="width:48px;height:48px;border-radius:50%;overflow:hidden;background:{e(background)};'
+                f'box-shadow:0 0 0 1px rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center">'
+                f'<img src="{option["src"]}" style="width:100%;height:100%;object-fit:contain"></div>'
+                f'<span style="font-size:12px;color:#666">{index + 1}</span></div>')
+        return '<div style="display:flex;flex-wrap:wrap;gap:6px 4px;margin:2px 0 6px">' + ''.join(cells) + '</div>'
 
 
-st.subheader('2. Inhalte bearbeiten')
-l, r = st.columns([.86, 1.14], gap='large')
-with l:
+    st.subheader('2. Inhalte bearbeiten')
     st.text_input('Absender / Marke', key='sender', max_chars=37,
                   help='Markenname des Absenders. Zu lange Namen werden in der Vorschau mit „…“ gekürzt, damit das Siegel sichtbar bleibt.')
     st.text_input('Betreff', key='subject', max_chars=37)
@@ -1083,14 +1094,28 @@ with l:
                            mime='image/png', use_container_width=True)
 
 
+# ---------------------------------------------------------------------------
+# Smartphone-Mockups (344 x 701 px) – drei Geräte: 1 ohne trustedDialog, 2 mit trustedDialog, 3 mit trustedDialog Preview
+# ---------------------------------------------------------------------------
 # Maße 1:1 aus der Vorlage (344 x 701 px). Koordinaten im .screen relativ zur linken oberen Display-Ecke.
 # Grundlinien (Baseline) der Texte stammen aus der Vorlage; top = Baseline - 0,842 x Schriftgröße (Roboto, line-height 1).
-PHONE_TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Inter:wght@600;700&display=swap">
-<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script><style>
+# Header (Status-Leiste, Kopfzeile, Suche) und Footer (Navigation, Home-Indikator) sind für alle drei Geräte identisch.
+BOARD_W, BOARD_H = 1144, 785          # Vergleichsgrafik: 3 x 344 px + 2 x 36 px Abstand + 20 px Rand; Titel + Gerät + Rand
+TD_ROW_TOP = 134                      # Oberkante der ersten Mail (unterhalb der Trennlinie)
+TD_ROW_H_PREVIEW = 169                # Zeilenhöhe der ersten Mail mit tD-Preview-Grafik (wie bisher)
+TD_ROW_H_PLAIN = 68.5                 # Zeilenhöhe der ersten Mail ohne Preview-Grafik (gleiche Abstände wie die übrigen Mails)
+ROW_SHIFT = TD_ROW_H_PREVIEW - TD_ROW_H_PLAIN   # um so viel rücken die weiteren Mails bei Gerät 1 und 2 nach oben
+
+PHONE_CSS = r'''<style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
-.stage{display:flex;flex-direction:column;align-items:center}
+html,body{height:100%;overflow:hidden;background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{display:flex;flex-direction:column;align-items:center;height:100%}
+#fitbox{position:relative;flex:0 0 auto;overflow:hidden;border-radius:8px;box-shadow:0 0 0 1px rgba(128,128,128,.28)}
+#scaler{position:absolute;left:0;top:0;transform-origin:0 0}
+#board{position:relative;width:__BW__px;height:__BH__px;background:#fff;display:flex;justify-content:center;align-items:flex-start;gap:36px;padding:20px 20px 0}
+.col{display:flex;flex-direction:column;align-items:center;gap:10px}
+.ptitle{height:34px;font:400 24px/34px Roboto,"Helvetica Neue",Arial,sans-serif;color:#111;white-space:nowrap}
+.toolbar{flex:0 0 auto;display:flex;gap:10px;justify-content:center;padding-top:10px}
 .phonewrap{position:relative;width:344px;height:701px}
 .sidebtn{position:absolute;border:1px solid #2c2b29;border-radius:1.5px;background:linear-gradient(90deg,#9a9895,#dcdbd9 50%,#b3b1ae)}
 .phone{position:absolute;left:7.5px;top:6.5px;width:325px;height:688px;border-radius:55px;background:#1b1a18}
@@ -1143,17 +1168,22 @@ html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-
 .navlabel{position:absolute;top:634.8px;width:60px;margin-left:-30px;text-align:center;font:500 8.6px/1 Roboto,Arial,sans-serif;color:#262626;letter-spacing:-.05px}
 .navlabel.active{color:#2f6fbf}
 .home{left:100px;top:653px;width:98px;height:4px;border-radius:2px;background:#111}
-.downloadbar{margin-top:12px;text-align:center}
 .downloadbtn{border:1px solid #777;background:#fff;color:#111;border-radius:6px;padding:9px 14px;font:600 13px Arial,sans-serif;cursor:pointer}
 .downloadbtn:hover{background:#f4f4f4}
-</style></head><body><div class="stage"><div class="phonewrap">
+.downloadbtn.primary{background:#1667c7;border-color:#1667c7;color:#fff}
+.downloadbtn.primary:hover{background:#1a73dc}
+.downloadbtn:disabled{opacity:.6;cursor:wait}
+</style>'''
+
+PHONE_OPEN = r'''<div class="phonewrap">
 <div class="sidebtn" style="left:4px;top:129px;width:5px;height:22px"></div>
 <div class="sidebtn" style="left:4px;top:174px;width:5px;height:44px"></div>
 <div class="sidebtn" style="left:4px;top:235px;width:5px;height:44px"></div>
 <div class="sidebtn" style="left:331.5px;top:208px;width:6px;height:71px"></div>
 <div class="phone"><div class="l1"></div><div class="l2"></div><div class="l3"></div><div class="bezel"></div>
-<div class="screen">
-<span class="abs time" id="now">09:24</span>
+<div class="screen">'''
+
+PHONE_HEAD = r'''<span class="abs time nowtime">09:24</span>
 <span class="abs island"><i></i></span>
 <span class="abs signal"><svg width="18" height="11" viewBox="0 0 18 11" aria-label="Mobilfunk"><rect x="1.2" y="6.2" width="2.7" height="4.5" rx=".7" fill="#111"/><rect x="5.8" y="4.7" width="2.7" height="6" rx=".7" fill="#c6c6c6"/><rect x="10.4" y="2.9" width="2.7" height="7.8" rx=".7" fill="#c6c6c6"/><rect x="15" y="1" width="2.7" height="9.7" rx=".7" fill="#c6c6c6"/></svg></span>
 <span class="abs wifi"><svg width="13" height="9.5" viewBox="0 0 13 9.5" aria-label="WLAN"><path d="M1 3.6a7.9 7.9 0 0 1 11 0" fill="none" stroke="#c9c9c9" stroke-width="1.7" stroke-linecap="round"/><path d="M3.1 5.7a4.9 4.9 0 0 1 6.8 0" fill="none" stroke="#000" stroke-width="1.7" stroke-linecap="round"/><path d="M6.5 9.1 4.9 7.5a2.3 2.3 0 0 1 3.2 0z" fill="#000" stroke="#000" stroke-width=".9" stroke-linejoin="round"/></svg></span>
@@ -1163,13 +1193,9 @@ html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-
 <span class="abs round" style="left:210.5px"><svg class="hicon" width="18" height="18" viewBox="0 0 18 18" style="stroke-width:1.7"><circle cx="9" cy="9" r="7.4"/><path d="m5.9 9.2 2.1 2.1 4.1-4.4"/></svg></span>
 <span class="abs round" style="left:255px"><svg width="19" height="19" viewBox="0 0 19 19"><path d="M8.5 3.2H4.2A1.7 1.7 0 0 0 2.5 4.9v9.9a1.7 1.7 0 0 0 1.7 1.7h9.9a1.7 1.7 0 0 0 1.7-1.7v-4.3" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round"/><path d="M14.6 1.7a1.6 1.6 0 0 1 2.3 2.3l-7.2 7.2-3.2.9.9-3.2z" fill="#111"/></svg></span>
 <div class="abs search"><span class="sicon"><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="5" cy="5" r="4" fill="none" stroke="#111" stroke-width="1.6"/><path d="m8 8 3.2 3.2" stroke="#111" stroke-width="1.7" stroke-linecap="round"/></svg></span><span class="t">Suchen</span></div>
-<span class="abs sline"></span>
-<div class="row" style="top:134px;height:169px">__AV__<div class="nl" style="top:9.2px"><span class="sender fit">__SENDER__</span>__SEAL__</div><div class="tm" style="top:10.7px" data-off="-3"></div><div class="sj unread fit" style="top:27.6px">__SUBJECT__</div><div class="pr fit" style="top:44.6px">__PRE__</div><div class="pwrap">__PV__</div><div class="div"></div></div>
-<div class="row" style="top:303px;height:58.5px"><span class="avatar" style="top:10px">OH</span><div class="nl" style="top:15.2px"><span class="sender">Otto Holler</span></div><div class="tm" style="top:14.7px" data-off="-23"></div><div class="sj" style="top:33.6px">Gewünschte Bilder</div><div class="div"></div></div>
-<div class="row" style="top:361.5px;height:72px"><span class="avatar" style="top:9.5px">FF</span><div class="nl" style="top:12.7px"><span class="sender">Fred Fritt</span></div><div class="tm" style="top:15.2px" data-off="-69"></div><div class="sj" style="top:30.1px">Klassentreffen</div><div class="pr" style="top:48.1px">Schön war es!</div><div class="div"></div></div>
-<div class="row" style="top:433.5px;height:72.5px"><img class="avatar" style="top:9.5px;background:#1d72e8" src="__GMXLOGO__" alt="GMX"><div class="nl" style="top:13.7px"><span class="sender">GMX Magazin</span>__SEAL__</div><div class="tm" style="top:15.2px" data-off="-117"></div><div class="sj fit" style="top:31.1px">Traumhaus auf Föhr zu gewinnen: 8 Zimmer, Meerblick</div><div class="pr fit" style="top:49.1px">Jetzt Lose bei GMX Lotto sichern! Wer jetzt mitspielt …</div><div class="div"></div></div>
-<div class="row" style="top:506px;height:72px"><span class="avatar" style="top:8px">SW</span><div class="nl" style="top:13.2px"><span class="sender">Shopping World</span></div><div class="tm" style="top:14.7px" data-off="-145"></div><div class="sj" style="top:30.6px">Neue Deals am Wochenende</div><div class="pr" style="top:47.6px">Jetzt entdecken</div><div class="div"></div></div>
-<div class="abs dock"></div>
+<span class="abs sline"></span>'''
+
+PHONE_FOOT = r'''<div class="abs dock"></div>
 <div class="abs nav"></div><div class="abs navhl"></div>
 <span class="navicon" style="left:31px;top:614px"><svg width="18" height="15" viewBox="0 0 18 15"><rect width="18" height="15" fill="#1667c7"/><path d="M.6 .9 9 8l8.4-7.1M.6 14.2l6.3-6.6M17.4 14.2l-6.3-6.6" fill="none" stroke="#fff" stroke-width="1.15"/></svg></span>
 <span class="navicon" style="left:86px;top:615px"><svg width="16.5" height="13.5" viewBox="0 0 18 13.5" preserveAspectRatio="none"><path d="M0 1.3C0 .6.5 0 1.2 0h4.7l1.7 1.9h9.2c.7 0 1.2.6 1.2 1.3v9c0 .7-.5 1.3-1.2 1.3H1.2C.5 13.5 0 12.9 0 12.2z" fill="#111"/></svg></span>
@@ -1181,13 +1207,31 @@ html,body{background:transparent;font-family:Roboto,"Helvetica Neue",Arial,sans-
 <span class="navlabel" style="left:146.5px">Fotos</span>
 <span class="navlabel" style="left:200.5px">Mobile</span>
 <span class="navlabel" style="left:252.5px">News</span>
-<div class="abs home"></div>
+<div class="abs home"></div>'''
+
+PHONE_CLOSE = '</div></div></div>'
+
+TD_ROW = r'''<div class="row" style="top:134px;height:__H__px">__AV__<div class="nl" style="top:9.2px"><span class="sender fit">__SENDER__</span>__SEAL__</div><div class="tm" style="top:10.7px" data-off="-3"></div><div class="sj unread fit" style="top:27.6px">__SUBJECT__</div><div class="pr fit" style="top:44.6px">__PRE__</div>__PVBLOCK__<div class="div"></div></div>'''
+
+OTHER_ROWS = r'''<div class="row" style="top:__T1__px;height:58.5px"><span class="avatar" style="top:10px">OH</span><div class="nl" style="top:15.2px"><span class="sender">Otto Holler</span></div><div class="tm" style="top:14.7px" data-off="-23"></div><div class="sj" style="top:33.6px">Gewünschte Bilder</div><div class="div"></div></div>
+<div class="row" style="top:__T2__px;height:72px"><span class="avatar" style="top:9.5px">FF</span><div class="nl" style="top:12.7px"><span class="sender">Fred Fritt</span></div><div class="tm" style="top:15.2px" data-off="-69"></div><div class="sj" style="top:30.1px">Klassentreffen</div><div class="pr" style="top:48.1px">Schön war es!</div><div class="div"></div></div>
+<div class="row" style="top:__T3__px;height:72.5px"><img class="avatar" style="top:9.5px;background:#1d72e8" src="__GMXLOGO__" alt="GMX"><div class="nl" style="top:13.7px"><span class="sender">GMX Magazin</span>__SEAL__</div><div class="tm" style="top:15.2px" data-off="-117"></div><div class="sj fit" style="top:31.1px">Traumhaus auf Föhr zu gewinnen: 8 Zimmer, Meerblick</div><div class="pr fit" style="top:49.1px">Jetzt Lose bei GMX Lotto sichern! Wer jetzt mitspielt …</div><div class="div"></div></div>
+<div class="row" style="top:__T4__px;height:72px"><span class="avatar" style="top:8px">SW</span><div class="nl" style="top:13.2px"><span class="sender">Shopping World</span></div><div class="tm" style="top:14.7px" data-off="-145"></div><div class="sj" style="top:30.6px">Neue Deals am Wochenende</div><div class="pr" style="top:47.6px">Jetzt entdecken</div><div class="div"></div></div>'''
+
+BOARD_TEMPLATE = r'''<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Inter:wght@600;700&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>__CSS__</head><body><div class="wrap">
+<div id="fitbox"><div id="scaler"><div id="board">
+<div class="col" id="col1"><div class="ptitle">Ohne trustedDialog</div>__PHONE1__</div>
+<div class="col" id="col2"><div class="ptitle">Mit trustedDialog</div>__PHONE2__</div>
+<div class="col" id="col3"><div class="ptitle">Mit trustedDialog Preview</div>__PHONE3__</div>
 </div></div></div>
-<div class="downloadbar"><button class="downloadbtn" onclick="downloadPreview()">GMX-Vorschau als PNG herunterladen</button></div>
+<div class="toolbar" id="toolbar"><button class="downloadbtn primary" onclick="downloadBoard(this)">Alle 3 Mockups als eine PNG-Grafik herunterladen</button><button class="downloadbtn" onclick="downloadPhone(this)">Nur Mockup 3 (mit Preview)</button></div>
 </div>
 <script>
+const BOARD_W=__BW__,BOARD_H=__BH__;
 const p=n=>String(n).padStart(2,'0'),fmt=d=>p(d.getHours())+':'+p(d.getMinutes());
-function tick(){let n=new Date();document.getElementById('now').textContent=fmt(n);document.querySelectorAll('[data-off]').forEach(x=>x.textContent=fmt(new Date(n.getTime()+Number(x.dataset.off)*60000)))}
+function tick(){let n=new Date();document.querySelectorAll('.nowtime').forEach(x=>x.textContent=fmt(n));document.querySelectorAll('[data-off]').forEach(x=>x.textContent=fmt(new Date(n.getTime()+Number(x.dataset.off)*60000)))}
 tick();setInterval(tick,30000);
 /* Zu lange Texte pixelgenau mit „…“ kürzen (wie in der GMX-App). Beim Absender bleibt das Siegel dadurch immer sichtbar. */
 function fitText(el){
@@ -1202,10 +1246,8 @@ function fitText(el){
 function fitAll(){document.querySelectorAll('.fit').forEach(fitText)}
 fitAll();
 if(document.fonts&&document.fonts.ready) document.fonts.ready.then(fitAll);
-/* Avatar der tD-Mail: SVG/PNG auf den gewählten Hintergrund (Standard Weiß) legen und als PNG fixieren. */
-async function rasterizeTdAvatar(){
- const img=document.getElementById('td-avatar');
- if(!img) return;
+/* Avatar der tD-Mails (Gerät 2 und 3): SVG/PNG auf den gewählten Hintergrund (Standard Weiß) legen und als PNG fixieren. */
+async function rasterizeTdAvatar(img){
  const source=new Image();
  await new Promise((resolve,reject)=>{source.onload=resolve;source.onerror=reject;source.src=img.dataset.src;});
  const size=264,canvas=document.createElement('canvas');canvas.width=size;canvas.height=size;
@@ -1220,27 +1262,41 @@ async function rasterizeTdAvatar(){
  img.style.padding='0';img.style.objectFit='cover';
  img.src=canvas.toDataURL('image/png');
 }
-rasterizeTdAvatar().catch(err=>console.warn('Avatar konnte nicht in PNG umgewandelt werden',err));
-async function downloadPreview(){
- const button=document.querySelector('.downloadbtn');
- const phone=document.querySelector('.phonewrap');
+(async()=>{for(const img of document.querySelectorAll('img.td-avatar')){try{await rasterizeTdAvatar(img);}catch(err){console.warn('Avatar konnte nicht in PNG umgewandelt werden',err);}}})();
+/* Die drei Geräte werden immer komplett in den sichtbaren Bereich eingepasst (nur die Anzeige wird skaliert, nie der Export). */
+function fitBoard(){
+ const box=document.getElementById('fitbox'),scaler=document.getElementById('scaler'),bar=document.getElementById('toolbar');
+ const availW=document.documentElement.clientWidth,availH=window.innerHeight-bar.offsetHeight-6;
+ const s=Math.max(.2,Math.min(1,availW/BOARD_W,availH/BOARD_H));
+ scaler.style.transform='scale('+s+')';
+ box.style.width=Math.round(BOARD_W*s)+'px';box.style.height=Math.round(BOARD_H*s)+'px';
+}
+fitBoard();window.addEventListener('resize',fitBoard);
+function safeSender(){return String(__DLSENDER__).trim().replace(/[\\/:*?"<>|]+/g,'_')||'Absender';}
+async function exportNode(node,w,h,filename,button,bg){
  const original=button.textContent;
  try{
   button.disabled=true;button.textContent='PNG wird erstellt…';
   if(typeof html2canvas==='undefined') throw new Error('html2canvas konnte nicht geladen werden');
   await document.fonts.ready;fitAll();
-  await Promise.all(Array.from(phone.querySelectorAll('img')).map(img=>img.complete ? Promise.resolve() : new Promise(resolve=>{img.onload=resolve;img.onerror=resolve;})));
-  const canvas=await html2canvas(phone,{
-   backgroundColor:null,
+  await Promise.all(Array.from(node.querySelectorAll('img')).map(img=>img.complete ? Promise.resolve() : new Promise(resolve=>{img.onload=resolve;img.onerror=resolve;})));
+  const canvas=await html2canvas(node,{
+   backgroundColor:bg,
    scale:3,
    useCORS:true,
    allowTaint:false,
    logging:false,
-   width:344,
-   height:701,
+   width:w,
+   height:h,
+   windowWidth:BOARD_W,
+   windowHeight:BOARD_H,
    scrollX:0,
    scrollY:0,
    onclone:(doc)=>{
+    /* Export immer in voller Größe, unabhängig von der Skalierung der Anzeige */
+    const box=doc.getElementById('fitbox'),scaler=doc.getElementById('scaler');
+    scaler.style.transform='none';
+    box.style.width=BOARD_W+'px';box.style.height=BOARD_H+'px';box.style.overflow='visible';box.style.boxShadow='none';box.style.borderRadius='0';
     doc.querySelectorAll('img.preview').forEach(img=>{
      const wrap=img.closest('.pwrap');
      if(wrap){
@@ -1260,13 +1316,11 @@ async function downloadPreview(){
     });
    }
   });
-  const rawSender=__DLSENDER__;
-  const safeSender=String(rawSender).trim().replace(/[\\/:*?"<>|]+/g,'_')||'Absender';
   const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
   if(!blob) throw new Error('PNG-Blob konnte nicht erzeugt werden');
   const url=URL.createObjectURL(blob);
   const link=document.createElement('a');
-  link.download='GMX_trustedDialogPreview_'+safeSender+'.png';
+  link.download=filename;
   link.href=url;
   document.body.appendChild(link);link.click();link.remove();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -1275,28 +1329,51 @@ async function downloadPreview(){
   alert('Die PNG-Datei konnte nicht erzeugt werden: '+err.message);
  }finally{button.disabled=false;button.textContent=original;}
 }
+function downloadBoard(button){return exportNode(document.getElementById('board'),BOARD_W,BOARD_H,'GMX_trustedDialog_Vergleich_'+safeSender()+'.png',button,'#ffffff');}
+function downloadPhone(button){return exportNode(document.querySelector('#col3 .phonewrap'),344,701,'GMX_trustedDialogPreview_'+safeSender()+'.png',button,null);}
 </script></body></html>'''
 
 
-def build_phone_html(sender_name, subject_text, preheader_text, avatar_src='', avatar_bg=AVATAR_BG_DEFAULT,
+def phone_html(avatar, show_seal, show_preview, sender, subject, preheader, preview_block):
+    """Ein Gerät. Header und Footer sind in allen drei Varianten identisch; nur die erste Mail unterscheidet sich."""
+    seal = f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">' if show_seal else ''
+    row_h = TD_ROW_H_PREVIEW if show_preview else TD_ROW_H_PLAIN
+    shift = 0 if show_preview else ROW_SHIFT
+    first = (TD_ROW.replace('__H__', f'{row_h:g}').replace('__AV__', avatar).replace('__SEAL__', seal)
+             .replace('__SENDER__', sender).replace('__SUBJECT__', subject).replace('__PRE__', preheader)
+             .replace('__PVBLOCK__', preview_block if show_preview else ''))
+    rest = OTHER_ROWS.replace('__GMXLOGO__', GMX_LOGO).replace('__SEAL__', f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">')
+    for token, top in (('__T1__', 303), ('__T2__', 361.5), ('__T3__', 433.5), ('__T4__', 506)):
+        rest = rest.replace(token, f'{top - shift:g}')
+    return PHONE_OPEN + PHONE_HEAD + first + rest + PHONE_FOOT + PHONE_CLOSE
+
+
+def build_board_html(sender_name, subject_text, preheader_text, avatar_src='', avatar_bg=AVATAR_BG_DEFAULT,
                      avatar_fit='contain', avatar_pad=0.0, fallback_color=AVATAR_DEFAULT, preview_src=''):
-    """Erzeugt das GMX-Smartphone-Mockup (HTML) für die Live-Vorschau und den PNG-Export."""
+    """Erzeugt die Gegenüberstellung der drei GMX-Smartphone-Mockups (HTML) für die Live-Vorschau und den PNG-Export.
+    Alle drei Geräte erhalten dieselben Texte (Absender/Marke, Betreff, Preview-Text)."""
     bg = e(avatar_bg or AVATAR_BG_DEFAULT)
     letters = e(''.join(x[0] for x in (sender_name or '').split()[:2]).upper() or 'M')
+    initials = f'<span class="avatar" style="top:6px;background:{e(fallback_color)}">{letters}</span>'
     if avatar_src:
         fit = 'cover' if avatar_fit == 'cover' else 'contain'
         pad_px = round(33 * avatar_pad, 2)
-        av = (f'<img class="avatar" id="td-avatar" style="top:6px;background:{bg};object-fit:{fit};padding:{pad_px}px" '
-              f'src="{avatar_src}" data-src="{avatar_src}" data-bg="{bg}" data-fit="{fit}" data-pad="{avatar_pad}" alt="">')
+        logo = (f'<img class="avatar td-avatar" style="top:6px;background:{bg};object-fit:{fit};padding:{pad_px}px" '
+                f'src="{avatar_src}" data-src="{avatar_src}" data-bg="{bg}" data-fit="{fit}" data-pad="{avatar_pad}" alt="">')
     else:
-        av = f'<span class="avatar" style="top:6px;background:{e(fallback_color)}">{letters}</span>'
+        logo = initials
     pv = f'<img class="preview" src="{preview_src}">' if preview_src else '<div class="preview placeholder">Bild einfügen</div>'
-    seal = f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">'
+    preview_block = f'<div class="pwrap">{pv}</div>'
+    texts = (display_text(sender_name) or 'Marke', display_text(subject_text), display_text(preheader_text))
     download_sender = json.dumps(sender_name or 'Absender', ensure_ascii=False).replace('<', '\\u003c')
-    out = PHONE_TEMPLATE
-    for token, value in {'__AV__': av, '__PV__': pv, '__SEAL__': seal, '__SENDER__': display_text(sender_name) or 'Marke',
-                         '__SUBJECT__': display_text(subject_text), '__PRE__': display_text(preheader_text),
-                         '__GMXLOGO__': GMX_LOGO, '__DLSENDER__': download_sender}.items():
+    phones = (
+        phone_html(initials, False, False, *texts, preview_block),   # 1. ohne trustedDialog: Initialen-Avatar, kein Siegel
+        phone_html(logo, True, False, *texts, preview_block),        # 2. mit trustedDialog: Logo-Avatar + Siegel
+        phone_html(logo, True, True, *texts, preview_block),         # 3. mit trustedDialog Preview: zusätzlich Preview-Grafik
+    )
+    out = BOARD_TEMPLATE.replace('__CSS__', PHONE_CSS)
+    for token, value in {'__PHONE1__': phones[0], '__PHONE2__': phones[1], '__PHONE3__': phones[2],
+                         '__BW__': str(BOARD_W), '__BH__': str(BOARD_H), '__DLSENDER__': download_sender}.items():
         out = out.replace(token, value)
     return out
 
@@ -1310,15 +1387,17 @@ else:
     avatar_src = ''
 psrc = uri(pf) if pf else ('data:image/png;base64,' + base64.b64encode(st.session_state.generated_preview).decode()
                            if st.session_state.generated_preview else '')
-H = build_phone_html(st.session_state.sender, st.session_state.subject, st.session_state.preheader, avatar_src,
+H = build_board_html(st.session_state.sender, st.session_state.subject, st.session_state.preheader, avatar_src,
                      st.session_state.avatar_bg, 'cover' if st.session_state.avatar_fit == 'Füllend' else 'contain',
                      st.session_state.avatar_pad / 100, st.session_state.color, psrc)
-with r:
-    st.subheader('3. GMX Live-Vorschau')
-    st.caption('Smartphone · GMX.DE · iOS')
+with right:
+    # Rechte Spalte bleibt beim Scrollen der Eingabefelder stehen (sticky) und ist so hoch wie der sichtbare Bereich.
+    # Die Anzeige skaliert die drei Geräte automatisch in diese Fläche; der PNG-Export bleibt immer in voller Größe.
+    st.markdown(STICKY_CSS, unsafe_allow_html=True)
     html_component = getattr(components, 'html', None)   # in neueren Streamlit-Versionen abgekündigt
     if html_component is not None:
-        html_component(H, height=770, scrolling=False)
+        html_component(H, height=800, scrolling=False)
     else:
-        st.iframe(H, height=770)
-st.caption('Echtes trustedDialog SVG-Siegel · Avatar-Auswahl aus der Website · Live-Zeit mit früheren Mailzeiten · Maße nach GMX-App-Vorlage (344 × 701 px)')
+        st.iframe(H, height=800)
+st.caption('Echtes trustedDialog SVG-Siegel · Avatar-Auswahl aus der Website · Live-Zeit mit früheren Mailzeiten · '
+           'Maße nach GMX-App-Vorlage (je Gerät 344 × 701 px) · Export: eine Grafik mit allen 3 Mockups')
