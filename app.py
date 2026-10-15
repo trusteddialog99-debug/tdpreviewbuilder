@@ -16,6 +16,10 @@ UA = 'Mozilla/5.0 (compatible; trustedDialog-Preview-Builder/1.0)'
 PREVIEW_SIZE = (1088, 464)
 AVATAR_DEFAULT = '#B8DDFD'     # Fallback-Avatar (Initialen) laut GMX-Vorlage
 AVATAR_BG_DEFAULT = '#FFFFFF'  # Hintergrund hinter Logo-Avataren der tD-Mail (transparente SVG/PNG)
+# Promo-Code unter der tD-Preview-Grafik (Mockup 3). Zeichenanzahl nach Vorlage „IhreCodebeschreibung: IhrCode“.
+PROMO_LABEL_MAX = 20           # „IhreCodebeschreibung“ (der Doppelpunkt wird automatisch ergänzt)
+PROMO_CODE_MAX = 7             # „IhrCode“
+PROMO_LABEL_DEFAULT, PROMO_CODE_DEFAULT = 'IhreCodebeschreibung', 'IhrCode'
 
 
 @st.cache_data(show_spinner=False)
@@ -366,6 +370,39 @@ def rank_brand_colors(scores, logo=None):
     return [key for key, _ in ranked][:8]
 
 
+PROMO_KEYWORDS = [  # (Suchwort, Bezeichnung in der Box)
+    (r'gutschein-?code', 'Ihr Gutscheincode'), (r'rabatt-?code', 'Ihr Rabattcode'), (r'promo-?code', 'Ihr Promo-Code'),
+    (r'aktions-?code', 'Ihr Aktionscode'), (r'vorteils-?code', 'Ihr Vorteilscode'), (r'coupon-?code|coupon', 'Ihr Coupon-Code'),
+    (r'voucher-?code|discount code|promo code', 'Ihr Code'), (r'code', 'Ihr Code')]
+PROMO_STOPWORDS = {'JETZT', 'HIER', 'NEU', 'GRATIS', 'CODE', 'ONLINE', 'SHOP', 'EUR', 'EINLÖSEN', 'EINLOESEN', 'GILT',
+                   'NUR', 'BEI', 'MIT', 'UND', 'FÜR', 'DEN', 'DER', 'DIE', 'DAS', 'AGB', 'FAQ', 'PDF', 'HTML', 'UTF'}
+
+
+def find_promo_codes(text):
+    """Sucht Gutschein-/Rabatt-/Promo-Codes im Seitentext („mit dem Code SALE20“, „Gutscheincode: HERBST15“ …).
+    Rückgabe: Liste von {'label', 'code'} – sinnvollste Treffer zuerst."""
+    found = []
+    for keyword, label in PROMO_KEYWORDS:
+        pattern = (r'(?i:' + keyword + r')\b\s*(?:lautet|ist|:|–|-)?\s*[„"»\'“]?\s*'
+                   r'([A-Z0-9][A-Z0-9_-]{2,19})(?![A-Za-z0-9])')
+        for match in re.finditer(pattern, text):
+            code = match.group(1).strip('-_')
+            if code in PROMO_STOPWORDS or len(code) < 3 or not re.search(r'[A-Z]', code):
+                continue
+            if code.isdigit() or re.fullmatch(r'\d+[A-Z]?', code):
+                continue
+            if not re.search(r'\d', code) and len(code) < 4:
+                continue
+            found.append({'label': label, 'code': code})
+    out, seen = [], set()
+    for item in found:
+        if item['code'] not in seen:
+            seen.add(item['code'])
+            out.append(item)
+    out.sort(key=lambda item: (len(item['code']) > PROMO_CODE_MAX, item['label'] == 'Ihr Code'))
+    return out[:6]
+
+
 def analyze_site(value):
     raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000)
     html_text = raw.decode('utf-8', errors='ignore')
@@ -381,6 +418,7 @@ def analyze_site(value):
     for pattern in patterns:
         offers.extend(re.findall(pattern, body_text, flags=re.I))
     offers = unique([re.sub(r'\s+', ' ', x).strip(' -|') for x in offers])[:8]
+    promos = find_promo_codes(body_text[:400000])
     color_scores = page_color_scores(soup, html_text)
     images = []
     logos = []
@@ -425,7 +463,8 @@ def analyze_site(value):
         preheader = short('Jetzt Vorteile entdecken')
     return {'url': final_url, 'brand': short(brand), 'description': description, 'offers': offers,
             'color_scores': color_scores, 'colors': rank_brand_colors(color_scores), 'images': images,
-            'logos': logos, 'avatar_sources': avatar_sources, 'subject': subject, 'preheader': preheader}
+            'logos': logos, 'avatar_sources': avatar_sources, 'subject': subject, 'preheader': preheader,
+            'promos': promos}
 
 
 # ---------------------------------------------------------------------------
@@ -926,7 +965,8 @@ for k, v in {'domain': '', 'sender': 'Marke', 'subject': 'Betreff', 'preheader':
              'analysis': None, 'generated_preview': None, 'avatar_options': [], 'avatar_choice': -1,
              'avatar_bg': AVATAR_BG_DEFAULT, 'avatar_fit': 'Eingepasst', 'avatar_pad': 0, 'selected_image': '',
              'source_image': None, 'banner_logo': None, 'brand_color': '#1375d7', 'banner_headline': '',
-             'banner_cta': '', 'banner_mirror': False}.items():
+             'banner_cta': '', 'banner_mirror': False, 'promo_show': False, 'promo_label': PROMO_LABEL_DEFAULT,
+             'promo_code': PROMO_CODE_DEFAULT}.items():
     st.session_state.setdefault(k, v)
 
 
@@ -969,6 +1009,10 @@ with left:
                 st.session_state.sender = result['brand']
                 st.session_state.subject = result['subject']
                 st.session_state.preheader = result['preheader']
+                promo = next((x for x in result.get('promos', []) if len(x['code']) <= PROMO_CODE_MAX), None)
+                st.session_state.promo_show = promo is not None       # gefundener Code wird direkt in Mockup 3 gezeigt
+                st.session_state.promo_label = promo['label'][:PROMO_LABEL_MAX] if promo else PROMO_LABEL_DEFAULT
+                st.session_state.promo_code = promo['code'] if promo else PROMO_CODE_DEFAULT
                 st.session_state.banner_headline = result['offers'][0] if result['offers'] else result['subject']
                 st.session_state.banner_cta = ''
                 st.session_state.avatar_options = load_avatar_options(result['avatar_sources'])
@@ -1072,6 +1116,24 @@ with left:
                  help='Eingepasst: ganzes Logo sichtbar. Füllend: Kreis wird komplett ausgefüllt (Ränder werden beschnitten).')
         st.slider('Innenabstand (%)', 0, 30, key='avatar_pad', step=2)
     pf = st.file_uploader('Preview-Bild überschreiben (1088 × 464 px)', type=['png', 'jpg', 'jpeg', 'webp'])
+    with st.expander('Promo-Code unter der Preview-Grafik (Mockup 3)', expanded=bool(st.session_state.promo_show)):
+        promos = (analysis or {}).get('promos', [])
+        usable = [x for x in promos if len(x['code']) <= PROMO_CODE_MAX]
+        if usable:
+            st.caption('Auf der Website gefunden: ' + ' · '.join(f"**{x['code']}**" for x in usable[:4]))
+        elif analysis:
+            st.caption('Auf der Website wurde kein Promo-Code gefunden. Bei Bedarf hier einblenden und selbst eintragen.')
+        too_long = [x['code'] for x in promos if len(x['code']) > PROMO_CODE_MAX]
+        if too_long:
+            st.caption(f'Gefunden, aber länger als {PROMO_CODE_MAX} Zeichen (nicht übernommen): ' + ', '.join(too_long[:3]))
+        st.checkbox('Promo-Code einblenden', key='promo_show',
+                    help='Blendet die gepunktete Promo-Code-Box unter der Preview-Grafik ein; die folgenden Mails rücken nach unten.')
+        c1, c2 = st.columns([1.6, 1])
+        with c1:
+            st.text_input('Codebeschreibung', key='promo_label', max_chars=PROMO_LABEL_MAX,
+                          disabled=not st.session_state.promo_show, help='Der Doppelpunkt wird automatisch ergänzt.')
+        with c2:
+            st.text_input('Code', key='promo_code', max_chars=PROMO_CODE_MAX, disabled=not st.session_state.promo_show)
     with st.expander('Grafik-Einstellungen (generiertes Preview-Bild)', expanded=False):
         st.text_input('Headline in der Grafik', key='banner_headline',
                       help='Eine einzige kurze Botschaft, z. B. „50 %“, „Sale“ oder „Neu entdecken“.')
@@ -1104,6 +1166,8 @@ BOARD_W, BOARD_H = 1144, 785          # Vergleichsgrafik: 3 x 344 px + 2 x 36 px
 TD_ROW_TOP = 134                      # Oberkante der ersten Mail (unterhalb der Trennlinie)
 TD_ROW_H_PREVIEW = 169                # Zeilenhöhe der ersten Mail mit tD-Preview-Grafik (wie bisher)
 TD_ROW_H_PLAIN = 68.5                 # Zeilenhöhe der ersten Mail ohne Preview-Grafik (gleiche Abstände wie die übrigen Mails)
+PROMO_TOP, PROMO_H, PROMO_GAP = 168, 23, 15   # Promo-Box: 13 px unter der Grafik, 23 px hoch, 15 px bis zur Trennlinie
+PROMO_EXTRA = PROMO_TOP + PROMO_H + PROMO_GAP - TD_ROW_H_PREVIEW   # = 37 px, um so viel rücken die Mails in Gerät 3 nach unten
 ROW_SHIFT = TD_ROW_H_PREVIEW - TD_ROW_H_PLAIN   # um so viel rücken die weiteren Mails bei Gerät 1 und 2 nach oben
 
 PHONE_CSS = r'''<style>
@@ -1128,7 +1192,7 @@ html,body{height:100%;overflow:hidden;background:transparent;font-family:Roboto,
 .abs{position:absolute}
 .t{position:absolute;line-height:1;white-space:nowrap}
 /* Status-Leiste */
-.time{left:21.5px;top:12.2px;font:600 15px/1 Inter,-apple-system,"SF Pro Text",Roboto,Arial,sans-serif;color:#000;letter-spacing:-1px}
+.time{left:21.5px;top:12.2px;font:600 12px/1 Inter,-apple-system,"SF Pro Text",Roboto,Arial,sans-serif;color:#000;letter-spacing:-1px}
 .island{left:112px;top:12px;width:75px;height:22px;border-radius:11px;background:#0c0c0c}
 .island i{position:absolute;left:60.5px;top:7px;width:8px;height:8px;border-radius:50%;background:radial-gradient(circle,#0a0a2a 25%,#26357a 60%,#121212 100%)}
 .signal{left:213px;top:14px;width:18px;height:11px}
@@ -1160,12 +1224,15 @@ html,body{height:100%;overflow:hidden;background:transparent;font-family:Roboto,
 .pwrap{position:absolute;left:57px;top:64px;width:216px;height:91px;border-radius:3px;overflow:hidden}
 .preview{width:100%;height:100%;object-fit:cover;display:block}
 .placeholder{background:#e1002d;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px}
+/* Promo-Code-Box unter der Preview-Grafik: gepunktete Umrandung passt sich der Textlänge an */
+.promo{position:absolute;left:57px;top:168px;height:23px;max-width:216px;display:inline-flex;align-items:center;padding:0 10px;border:1.6px dotted #45872F;border-radius:11.5px;white-space:nowrap;font:400 10.6px/1 Roboto,Arial,sans-serif;color:#2A68AE}
+.promo b{font-weight:700;color:#262626;margin-right:2.7px}
 /* Navigation */
-.dock{left:0;top:586px;width:297.5px;height:77px;background:linear-gradient(to bottom,rgba(255,255,255,0) 0,#f4f4f4 17px,#efefef 100%)}
-.nav{left:8.5px;top:603px;width:277px;height:48px;border-radius:24px;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.05)}
-.navhl{left:11.5px;top:606px;width:57.5px;height:43px;border-radius:21.5px;background:#eeeeed}
-.navicon{position:absolute;top:612px}
-.navlabel{position:absolute;top:634.8px;width:60px;margin-left:-30px;text-align:center;font:500 8.6px/1 Roboto,Arial,sans-serif;color:#262626;letter-spacing:-.05px}
+.dock{left:0;top:581px;width:297.5px;height:77px;background:linear-gradient(to bottom,rgba(255,255,255,0) 0,#f4f4f4 17px,#efefef 100%)}
+.nav{left:8.5px;top:598px;width:277px;height:48px;border-radius:24px;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.05)}
+.navhl{left:11.5px;top:601px;width:57.5px;height:43px;border-radius:21.5px;background:#eeeeed}
+.navicon{position:absolute;top:607px}
+.navlabel{position:absolute;top:629.8px;width:60px;margin-left:-30px;text-align:center;font:500 8.6px/1 Roboto,Arial,sans-serif;color:#262626;letter-spacing:-.05px}
 .navlabel.active{color:#2f6fbf}
 .home{left:100px;top:653px;width:98px;height:4px;border-radius:2px;background:#111}
 .downloadbtn{border:1px solid #777;background:#fff;color:#111;border-radius:6px;padding:9px 14px;font:600 13px Arial,sans-serif;cursor:pointer}
@@ -1197,11 +1264,11 @@ PHONE_HEAD = r'''<span class="abs time nowtime">09:24</span>
 
 PHONE_FOOT = r'''<div class="abs dock"></div>
 <div class="abs nav"></div><div class="abs navhl"></div>
-<span class="navicon" style="left:31px;top:614px"><svg width="18" height="15" viewBox="0 0 18 15"><rect width="18" height="15" fill="#1667c7"/><path d="M.6 .9 9 8l8.4-7.1M.6 14.2l6.3-6.6M17.4 14.2l-6.3-6.6" fill="none" stroke="#fff" stroke-width="1.15"/></svg></span>
-<span class="navicon" style="left:86px;top:615px"><svg width="16.5" height="13.5" viewBox="0 0 18 13.5" preserveAspectRatio="none"><path d="M0 1.3C0 .6.5 0 1.2 0h4.7l1.7 1.9h9.2c.7 0 1.2.6 1.2 1.3v9c0 .7-.5 1.3-1.2 1.3H1.2C.5 13.5 0 12.9 0 12.2z" fill="#111"/></svg></span>
-<span class="navicon" style="left:135px;top:613px"><svg width="21" height="19" viewBox="0 0 21 19"><path d="M1.2 5.2v11.6c0 .6.5 1.1 1.1 1.1h11.8" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round"/><rect x="4.6" y=".3" width="15.6" height="14.4" rx="1.3" fill="#111"/><path d="m7.3 11.6 3.1-3.6 2 2.2 1.8-2 3 3.4z" fill="#fff"/><circle cx="16" cy="4.5" r="1.3" fill="#fff"/></svg></span>
-<span class="navicon" style="left:193px;top:617px"><svg width="15" height="11" viewBox="0 0 15 11"><rect x="0" y="7.2" width="2.4" height="3.8" rx=".5" fill="#222"/><rect x="4.2" y="4.8" width="2.4" height="6.2" rx=".5" fill="#222"/><rect x="8.4" y="2.4" width="2.4" height="8.6" rx=".5" fill="#222"/><rect x="12.6" y="0" width="2.4" height="11" rx=".5" fill="#222"/></svg></span>
-<span class="navicon" style="left:243px;top:613px"><svg width="19" height="17" viewBox="0 0 19 17"><rect x="0" y="0" width="19" height="17" rx="1.2" fill="#111"/><path d="M3 2.6v12" stroke="#fff" stroke-width="1"/><rect x="5.3" y="2.7" width="11" height="2.8" fill="none" stroke="#fff" stroke-width=".95"/><path d="M5.3 8.2h4.4M5.3 11.4h4.4" stroke="#fff" stroke-width="1.1"/><rect x="11.4" y="7.4" width="4.9" height="4.8" fill="none" stroke="#fff" stroke-width=".95"/></svg></span>
+<span class="navicon" style="left:31px;top:609px"><svg width="18" height="15" viewBox="0 0 18 15"><rect width="18" height="15" fill="#1667c7"/><path d="M.6 .9 9 8l8.4-7.1M.6 14.2l6.3-6.6M17.4 14.2l-6.3-6.6" fill="none" stroke="#fff" stroke-width="1.15"/></svg></span>
+<span class="navicon" style="left:86px;top:610px"><svg width="16.5" height="13.5" viewBox="0 0 18 13.5" preserveAspectRatio="none"><path d="M0 1.3C0 .6.5 0 1.2 0h4.7l1.7 1.9h9.2c.7 0 1.2.6 1.2 1.3v9c0 .7-.5 1.3-1.2 1.3H1.2C.5 13.5 0 12.9 0 12.2z" fill="#111"/></svg></span>
+<span class="navicon" style="left:135px;top:608px"><svg width="21" height="19" viewBox="0 0 21 19"><path d="M1.2 5.2v11.6c0 .6.5 1.1 1.1 1.1h11.8" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round"/><rect x="4.6" y=".3" width="15.6" height="14.4" rx="1.3" fill="#111"/><path d="m7.3 11.6 3.1-3.6 2 2.2 1.8-2 3 3.4z" fill="#fff"/><circle cx="16" cy="4.5" r="1.3" fill="#fff"/></svg></span>
+<span class="navicon" style="left:193px;top:612px"><svg width="15" height="11" viewBox="0 0 15 11"><rect x="0" y="7.2" width="2.4" height="3.8" rx=".5" fill="#222"/><rect x="4.2" y="4.8" width="2.4" height="6.2" rx=".5" fill="#222"/><rect x="8.4" y="2.4" width="2.4" height="8.6" rx=".5" fill="#222"/><rect x="12.6" y="0" width="2.4" height="11" rx=".5" fill="#222"/></svg></span>
+<span class="navicon" style="left:243px;top:608px"><svg width="19" height="17" viewBox="0 0 19 17"><rect x="0" y="0" width="19" height="17" rx="1.2" fill="#111"/><path d="M3 2.6v12" stroke="#fff" stroke-width="1"/><rect x="5.3" y="2.7" width="11" height="2.8" fill="none" stroke="#fff" stroke-width=".95"/><path d="M5.3 8.2h4.4M5.3 11.4h4.4" stroke="#fff" stroke-width="1.1"/><rect x="11.4" y="7.4" width="4.9" height="4.8" fill="none" stroke="#fff" stroke-width=".95"/></svg></span>
 <span class="navlabel active" style="left:40.5px">E-Mail</span>
 <span class="navlabel" style="left:93.5px">Dateien</span>
 <span class="navlabel" style="left:146.5px">Fotos</span>
@@ -1211,10 +1278,10 @@ PHONE_FOOT = r'''<div class="abs dock"></div>
 
 PHONE_CLOSE = '</div></div></div>'
 
-TD_ROW = r'''<div class="row" style="top:134px;height:__H__px">__AV__<div class="nl" style="top:9.2px"><span class="sender fit">__SENDER__</span>__SEAL__</div><div class="tm" style="top:10.7px" data-off="-3"></div><div class="sj unread fit" style="top:27.6px">__SUBJECT__</div><div class="pr fit" style="top:44.6px">__PRE__</div>__PVBLOCK__<div class="div"></div></div>'''
+TD_ROW = r'''<div class="row" style="top:134px;height:__H__px">__AV__<div class="nl" style="top:9.2px"><span class="sender fit">__SENDER__</span>__SEAL__</div><div class="tm" style="top:10.7px" data-off="-3"></div><div class="sj unread fit" style="top:27.6px">__SUBJECT__</div><div class="pr fit" style="top:44.6px">__PRE__</div>__PVBLOCK____PROMO__<div class="div"></div></div>'''
 
 OTHER_ROWS = r'''<div class="row" style="top:__T1__px;height:58.5px"><span class="avatar" style="top:10px">OH</span><div class="nl" style="top:15.2px"><span class="sender">Otto Holler</span></div><div class="tm" style="top:14.7px" data-off="-23"></div><div class="sj" style="top:33.6px">Gewünschte Bilder</div><div class="div"></div></div>
-<div class="row" style="top:__T2__px;height:72px"><span class="avatar" style="top:9.5px">FF</span><div class="nl" style="top:12.7px"><span class="sender">Fred Fritt</span></div><div class="tm" style="top:15.2px" data-off="-69"></div><div class="sj" style="top:30.1px">Klassentreffen</div><div class="pr" style="top:48.1px">Schön war es!</div><div class="div"></div></div>
+<div class="row" style="top:__T2__px;height:58.5px"><span class="avatar" style="top:10px">FF</span><div class="nl" style="top:15.2px"><span class="sender">Fred Fritt</span></div><div class="tm" style="top:14.7px" data-off="-69"></div><div class="sj" style="top:33.6px">Klassentreffen</div><div class="div"></div></div>
 <div class="row" style="top:__T3__px;height:72.5px"><img class="avatar" style="top:9.5px;background:#1d72e8" src="__GMXLOGO__" alt="GMX"><div class="nl" style="top:13.7px"><span class="sender">GMX Magazin</span>__SEAL__</div><div class="tm" style="top:15.2px" data-off="-117"></div><div class="sj fit" style="top:31.1px">Traumhaus auf Föhr zu gewinnen: 8 Zimmer, Meerblick</div><div class="pr fit" style="top:49.1px">Jetzt Lose bei GMX Lotto sichern! Wer jetzt mitspielt …</div><div class="div"></div></div>
 <div class="row" style="top:__T4__px;height:72px"><span class="avatar" style="top:8px">SW</span><div class="nl" style="top:13.2px"><span class="sender">Shopping World</span></div><div class="tm" style="top:14.7px" data-off="-145"></div><div class="sj" style="top:30.6px">Neue Deals am Wochenende</div><div class="pr" style="top:47.6px">Jetzt entdecken</div><div class="div"></div></div>'''
 
@@ -1334,22 +1401,34 @@ function downloadPhone(button){return exportNode(document.querySelector('#col3 .
 </script></body></html>'''
 
 
-def phone_html(avatar, show_seal, show_preview, sender, subject, preheader, preview_block):
-    """Ein Gerät. Header und Footer sind in allen drei Varianten identisch; nur die erste Mail unterscheidet sich."""
+def phone_html(avatar, show_seal, show_preview, sender, subject, preheader, preview_block, promo_block=''):
+    """Ein Gerät. Header und Footer sind in allen drei Varianten identisch; nur die erste Mail unterscheidet sich.
+    promo_block (nur mit Preview): Promo-Code-Box unter der Grafik; die folgenden Mails rücken um PROMO_EXTRA nach unten."""
     seal = f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">' if show_seal else ''
-    row_h = TD_ROW_H_PREVIEW if show_preview else TD_ROW_H_PLAIN
-    shift = 0 if show_preview else ROW_SHIFT
+    promo_block = promo_block if show_preview else ''
+    row_h = (TD_ROW_H_PREVIEW + (PROMO_EXTRA if promo_block else 0)) if show_preview else TD_ROW_H_PLAIN
+    shift = (-PROMO_EXTRA if promo_block else 0) if show_preview else ROW_SHIFT
     first = (TD_ROW.replace('__H__', f'{row_h:g}').replace('__AV__', avatar).replace('__SEAL__', seal)
              .replace('__SENDER__', sender).replace('__SUBJECT__', subject).replace('__PRE__', preheader)
-             .replace('__PVBLOCK__', preview_block if show_preview else ''))
+             .replace('__PVBLOCK__', preview_block if show_preview else '').replace('__PROMO__', promo_block))
     rest = OTHER_ROWS.replace('__GMXLOGO__', GMX_LOGO).replace('__SEAL__', f'<img class="seal" src="{SEAL}" alt="trustedDialog Siegel">')
-    for token, top in (('__T1__', 303), ('__T2__', 361.5), ('__T3__', 433.5), ('__T4__', 506)):
+    for token, top in (('__T1__', 303), ('__T2__', 361.5), ('__T3__', 420), ('__T4__', 492.5)):   # Fred Fritt ohne Preview-Text (58,5 px)
         rest = rest.replace(token, f'{top - shift:g}')
     return PHONE_OPEN + PHONE_HEAD + first + rest + PHONE_FOOT + PHONE_CLOSE
 
 
+def promo_html(label, code):
+    """Promo-Code-Box: „Beschreibung:“ fett/schwarz, Code blau, gepunktete grüne Umrandung (#45872F)."""
+    label = re.sub(r'\s+', ' ', label or '').strip().rstrip(':').strip()[:PROMO_LABEL_MAX]
+    code = re.sub(r'\s+', '', code or '')[:PROMO_CODE_MAX]
+    if not (label or code):
+        return ''
+    return f'<div class="promo">{f"<b>{e(label)}:</b>" if label else ""}<span>{e(code)}</span></div>'
+
+
 def build_board_html(sender_name, subject_text, preheader_text, avatar_src='', avatar_bg=AVATAR_BG_DEFAULT,
-                     avatar_fit='contain', avatar_pad=0.0, fallback_color=AVATAR_DEFAULT, preview_src=''):
+                     avatar_fit='contain', avatar_pad=0.0, fallback_color=AVATAR_DEFAULT, preview_src='',
+                     promo_label='', promo_code='', show_promo=False):
     """Erzeugt die Gegenüberstellung der drei GMX-Smartphone-Mockups (HTML) für die Live-Vorschau und den PNG-Export.
     Alle drei Geräte erhalten dieselben Texte (Absender/Marke, Betreff, Preview-Text)."""
     bg = e(avatar_bg or AVATAR_BG_DEFAULT)
@@ -1369,7 +1448,8 @@ def build_board_html(sender_name, subject_text, preheader_text, avatar_src='', a
     phones = (
         phone_html(initials, False, False, *texts, preview_block),   # 1. ohne trustedDialog: Initialen-Avatar, kein Siegel
         phone_html(logo, True, False, *texts, preview_block),        # 2. mit trustedDialog: Logo-Avatar + Siegel
-        phone_html(logo, True, True, *texts, preview_block),         # 3. mit trustedDialog Preview: zusätzlich Preview-Grafik
+        phone_html(logo, True, True, *texts, preview_block,          # 3. mit trustedDialog Preview: zusätzlich Preview-Grafik
+                   promo_html(promo_label, promo_code) if show_promo else ''),   # ggf. mit Promo-Code
     )
     out = BOARD_TEMPLATE.replace('__CSS__', PHONE_CSS)
     for token, value in {'__PHONE1__': phones[0], '__PHONE2__': phones[1], '__PHONE3__': phones[2],
@@ -1389,7 +1469,8 @@ psrc = uri(pf) if pf else ('data:image/png;base64,' + base64.b64encode(st.sessio
                            if st.session_state.generated_preview else '')
 H = build_board_html(st.session_state.sender, st.session_state.subject, st.session_state.preheader, avatar_src,
                      st.session_state.avatar_bg, 'cover' if st.session_state.avatar_fit == 'Füllend' else 'contain',
-                     st.session_state.avatar_pad / 100, st.session_state.color, psrc)
+                     st.session_state.avatar_pad / 100, st.session_state.color, psrc,
+                     st.session_state.promo_label, st.session_state.promo_code, bool(st.session_state.promo_show))
 with right:
     # Rechte Spalte bleibt beim Scrollen der Eingabefelder stehen (sticky) und ist so hoch wie der sichtbare Bereich.
     # Die Anzeige skaliert die drei Geräte automatisch in diese Fläche; der PNG-Export bleibt immer in voller Größe.

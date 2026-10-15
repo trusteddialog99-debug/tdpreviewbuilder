@@ -3,7 +3,24 @@
 Streamlit-App: Domain eingeben → Absender, Betreff, Preview-Text, Avatar und tD-Preview-Grafik werden vorgeschlagen →
 Live-Vorschau als Gegenüberstellung von **3 GMX-App-Mockups** (iOS) → Export als **eine** PNG-Grafik.
 
-## Neu in dieser Version
+## Neu in dieser Version (Feinschliff)
+
+1. **„Schön war es!“ entfernt:** Fred Fritt ist jetzt eine zweizeilige Mail (58,5 px wie Otto Holler); GMX Magazin und
+   Shopping World rücken in allen drei Geräten um 13,5 px auf.
+2. **Uhrzeit oben links:** 12 px statt 15 px (`.time{…font:600 12px/1 Inter…}`).
+3. **Footer:** Navigationsleiste 5 px höher → 7 px Abstand zum Home-Indikator wie in der GMX-App
+   (Home-Indikator bleibt an seiner Position).
+4. **Promo-Code (Mockup 3):**
+   - Die Website-Analyse sucht nach Codes („mit dem Code SALE20“, „Gutscheincode: …“, „Promo-Code „…““, „Rabattcode …“).
+     Ein gefundener Code wird direkt unter der Preview-Grafik in Gerät 3 angezeigt.
+   - Ohne Fund: Checkbox „Promo-Code einblenden“; Beschreibung und Code sind dann frei editierbar.
+   - Darstellung nach Vorlage: „Beschreibung:“ fett (#262626), Code blau (#2A68AE), gepunktete Umrandung #45872F,
+     Pillenform 23 px hoch; die Breite passt sich dem Inhalt an.
+   - Abstände: 13 px unter der Grafik, 15 px bis zur Trennlinie → die folgenden Mails rücken um 37 px nach unten.
+   - Zeichenanzahl nach Vorlage: Beschreibung max. 20 („IhreCodebeschreibung“), Code max. 7 („IhrCode“).
+     Längere Codes werden bei der Analyse angezeigt, aber nicht übernommen. Konstanten: `PROMO_LABEL_MAX`, `PROMO_CODE_MAX`.
+
+## Vorherige Version: 3 Mockups
 
 ### Gegenüberstellung mit 3 Mobile Devices
 | Gerät | Titel | Erste Mail |
