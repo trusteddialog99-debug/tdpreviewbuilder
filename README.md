@@ -17,7 +17,7 @@ Live-Vorschau als Gegenüberstellung von **3 GMX-App-Mockups** (iOS) → Export 
    - Darstellung nach Vorlage: „Beschreibung:“ fett (#262626), Code blau (#2A68AE), gepunktete Umrandung #45872F,
      Pillenform 23 px hoch; die Breite passt sich dem Inhalt an.
    - Abstände: 13 px unter der Grafik, 15 px bis zur Trennlinie → die folgenden Mails rücken um 37 px nach unten.
-   - Zeichenanzahl nach Vorlage: Beschreibung max. 20 („IhreCodebeschreibung“), Code max. 7 („IhrCode“).
+   - Zeichenanzahl (inkl. Leerzeichen): Beschreibung max. 17, Code max. 25. Bei langen Texten wird die Schrift in der Box automatisch etwas verkleinert.
      Längere Codes werden bei der Analyse angezeigt, aber nicht übernommen. Konstanten: `PROMO_LABEL_MAX`, `PROMO_CODE_MAX`.
 
 ## Vorherige Version: 3 Mockups

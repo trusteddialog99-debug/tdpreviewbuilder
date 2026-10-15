@@ -17,10 +17,10 @@ UA = 'Mozilla/5.0 (compatible; trustedDialog-Preview-Builder/1.0)'
 PREVIEW_SIZE = (1088, 464)
 AVATAR_DEFAULT = '#B8DDFD'     # Fallback-Avatar (Initialen) laut GMX-Vorlage
 AVATAR_BG_DEFAULT = '#FFFFFF'  # Hintergrund hinter Logo-Avataren der tD-Mail (transparente SVG/PNG)
-# Promo-Code unter der tD-Preview-Grafik (Mockup 3). Zeichenanzahl nach Vorlage „IhreCodebeschreibung: IhrCode“.
-PROMO_LABEL_MAX = 20           # „IhreCodebeschreibung“ (der Doppelpunkt wird automatisch ergänzt)
-PROMO_CODE_MAX = 7             # „IhrCode“
-PROMO_LABEL_DEFAULT, PROMO_CODE_DEFAULT = 'IhreCodebeschreibung', 'IhrCode'
+# Promo-Code unter der tD-Preview-Grafik (Mockup 3). Maximale Zeichenanzahl jeweils inkl. Leerzeichen.
+PROMO_LABEL_MAX = 17           # Codebeschreibung (der Doppelpunkt wird automatisch ergänzt)
+PROMO_CODE_MAX = 25            # Code
+PROMO_LABEL_DEFAULT, PROMO_CODE_DEFAULT = 'Codebeschreibung', 'IhrCode'
 
 
 @st.cache_data(show_spinner=False)
@@ -385,7 +385,7 @@ def find_promo_codes(text):
     found = []
     for keyword, label in PROMO_KEYWORDS:
         pattern = (r'(?i:' + keyword + r')\b\s*(?:lautet|ist|:|–|-)?\s*[„"»\'“]?\s*'
-                   r'([A-Z0-9][A-Z0-9_-]{2,19})(?![A-Za-z0-9])')
+                   r'([A-Z0-9][A-Z0-9_-]{2,24})(?![A-Za-z0-9])')
         for match in re.finditer(pattern, text):
             code = match.group(1).strip('-_')
             if code in PROMO_STOPWORDS or len(code) < 3 or not re.search(r'[A-Z]', code):
@@ -1421,10 +1421,14 @@ def phone_html(avatar, show_seal, show_preview, sender, subject, preheader, prev
 def promo_html(label, code):
     """Promo-Code-Box: „Beschreibung:“ fett/schwarz, Code blau, gepunktete grüne Umrandung (#45872F)."""
     label = re.sub(r'\s+', ' ', label or '').strip().rstrip(':').strip()[:PROMO_LABEL_MAX]
-    code = re.sub(r'\s+', '', code or '')[:PROMO_CODE_MAX]
+    code = re.sub(r'\s+', ' ', code or '').strip()[:PROMO_CODE_MAX]
     if not (label or code):
         return ''
-    return f'<div class="promo">{f"<b>{e(label)}:</b>" if label else ""}<span>{e(code)}</span></div>'
+    # Box ist max. 216 px breit (innen ca. 193 px): bei langen Texten Schrift verkleinern, damit nichts übersteht
+    est = (len(label) + 1 + len(code)) * 5.9 + 2.7
+    size = max(7.0, min(10.6, 10.6 * 193 / est)) if est > 193 else 10.6
+    style = f' style="font-size:{size:.1f}px"' if size < 10.6 else ''
+    return f'<div class="promo"{style}>{f"<b>{e(label)}:</b>" if label else ""}<span>{e(code)}</span></div>'
 
 
 def build_board_html(sender_name, subject_text, preheader_text, avatar_src='', avatar_bg=AVATAR_BG_DEFAULT,
