@@ -8,7 +8,8 @@ from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont, ImageOps
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title='trustedDialog Preview Builder', page_icon='✉️', layout='wide')
+st.set_page_config(page_title='trustedDialog Preview Builder',
+                   page_icon='https://img.ui-portal.de/trusteddialog/trustlogo/trusted-sign_GMX.svg', layout='wide')
 
 SEAL_URL = 'https://img.ui-portal.de/trusteddialog/trustlogo/trusted-sign_GMX.svg'
 GMX_LOGO_URL = 'https://logo.ui-portal.de/td/ab166bef-b456-4e67-984f-72fb64d4a2c6/bo10.svg'
@@ -993,7 +994,7 @@ with left:
     st.caption('Domain eingeben, Vorschläge automatisch erstellen und anschließend direkt bearbeiten.')
 
     st.subheader('1. Unternehmen analysieren')
-    d1, d2 = st.columns([4, 1])
+    d1, d2 = st.columns([3, 2])   # Eingabefeld schmaler, damit „Vorschläge erstellen“ auf dem Desktop komplett lesbar bleibt
     with d1:
         st.text_input('Für welche Domain soll das trustedDialog Preview generiert werden?', key='domain',
                       placeholder='z. B. www.beispiel.de')
