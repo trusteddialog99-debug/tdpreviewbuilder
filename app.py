@@ -994,13 +994,11 @@ with left:
     st.caption('Domain eingeben, Vorschläge automatisch erstellen und anschließend direkt bearbeiten.')
 
     st.subheader('1. Unternehmen analysieren')
-    d1, d2 = st.columns([3, 2])   # Eingabefeld schmaler, damit „Vorschläge erstellen“ auf dem Desktop komplett lesbar bleibt
+    d1, d2 = st.columns([3, 2], vertical_alignment='bottom')   # Eingabefeld schmaler, damit „Vorschläge erstellen“ auf dem Desktop komplett lesbar bleibt
     with d1:
         st.text_input('Für welche Domain soll das trustedDialog Preview generiert werden?', key='domain',
                       placeholder='z. B. www.beispiel.de')
     with d2:
-        st.write('')
-        st.write('')
         analyze_clicked = st.button('Vorschläge erstellen', type='primary', use_container_width=True)
     if analyze_clicked:
         try:
