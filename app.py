@@ -75,19 +75,45 @@ def public_url(value):
         return False
 
 
-def safe_fetch(value, max_bytes=7000000):
+BROWSER_HEADERS = [
+    {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+     'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8', 'Accept-Encoding': 'gzip, deflate',
+     'Upgrade-Insecure-Requests': '1', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate',
+     'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1'},
+    {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+     'Accept-Language': 'de-DE,de;q=0.9', 'Accept-Encoding': 'gzip, deflate'},
+]
+
+
+def safe_fetch(value, max_bytes=7000000, truncate=False):
+    """Lädt eine URL. truncate=True: bei Überschreitung von max_bytes wird abgeschnitten statt abgebrochen
+    (für HTML sinnvoll: Meta-Tags, Logos und Farben stehen fast immer am Anfang der Seite)."""
     if not public_url(value):
         raise ValueError('Die Domain ist nicht öffentlich erreichbar oder wurde aus Sicherheitsgründen blockiert.')
-    with requests.get(value, headers={'User-Agent': UA}, timeout=12, stream=True, allow_redirects=True) as response:
-        response.raise_for_status()
-        if not public_url(response.url):
-            raise ValueError('Die Weiterleitung wurde blockiert.')
-        data = bytearray()
-        for chunk in response.iter_content(65536):
-            data.extend(chunk)
-            if len(data) > max_bytes:
-                raise ValueError('Die abgerufene Datei ist zu groß.')
-        return bytes(data), response.url, response.headers.get('content-type', '')
+    last_error = None
+    for headers in BROWSER_HEADERS:
+        try:
+            with requests.get(value, headers=headers, timeout=12, stream=True, allow_redirects=True) as response:
+                if response.status_code in (401, 403, 429, 503):      # vermutlich Bot-Schutz -> nächster Header-Satz
+                    last_error = requests.HTTPError(f'{response.status_code} – die Website blockiert automatische Abrufe (Bot-Schutz)')
+                    continue
+                response.raise_for_status()
+                if not public_url(response.url):
+                    raise ValueError('Die Weiterleitung wurde blockiert.')
+                data = bytearray()
+                for chunk in response.iter_content(65536):
+                    data.extend(chunk)
+                    if len(data) > max_bytes:
+                        if truncate:
+                            del data[max_bytes:]
+                            break
+                        raise ValueError('Die abgerufene Datei ist zu groß.')
+                return bytes(data), response.url, response.headers.get('content-type', '')
+        except requests.RequestException as error:
+            last_error = error
+    raise last_error or ValueError('Die Website konnte nicht geladen werden.')
 
 
 def meta(soup, *keys):
@@ -405,7 +431,7 @@ def find_promo_codes(text):
 
 
 def analyze_site(value):
-    raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000)
+    raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000, truncate=True)
     html_text = raw.decode('utf-8', errors='ignore')
     soup = BeautifulSoup(raw, 'html.parser')
     host = (urlparse(final_url).hostname or '').replace('www.', '')
@@ -994,12 +1020,13 @@ with left:
     st.caption('Domain eingeben, Vorschläge automatisch erstellen und anschließend direkt bearbeiten.')
 
     st.subheader('1. Unternehmen analysieren')
-    d1, d2 = st.columns([3, 2], vertical_alignment='bottom')   # Eingabefeld schmaler, damit „Vorschläge erstellen“ auf dem Desktop komplett lesbar bleibt
-    with d1:
-        st.text_input('Für welche Domain soll das trustedDialog Preview generiert werden?', key='domain',
-                      placeholder='z. B. www.beispiel.de')
-    with d2:
-        analyze_clicked = st.button('Vorschläge erstellen', type='primary', use_container_width=True)
+    with st.form('domain_form', border=False):    # Formular: Enter im Eingabefeld = Klick auf „Vorschläge erstellen“
+        d1, d2 = st.columns([3, 2], vertical_alignment='bottom')   # Eingabefeld schmaler, damit „Vorschläge erstellen“ auf dem Desktop komplett lesbar bleibt
+        with d1:
+            st.text_input('Für welche Domain soll das trustedDialog Preview generiert werden?', key='domain',
+                          placeholder='z. B. www.beispiel.de')
+        with d2:
+            analyze_clicked = st.form_submit_button('Vorschläge erstellen', type='primary', use_container_width=True)
     if analyze_clicked:
         try:
             with st.spinner('Website wird analysiert und die Preview vorbereitet …'):
