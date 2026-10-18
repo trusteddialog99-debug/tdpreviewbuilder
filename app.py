@@ -430,8 +430,13 @@ def find_promo_codes(text):
     return out[:6]
 
 
-def analyze_site(value):
-    raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000, truncate=True)
+def analyze_site(value, pasted=None):
+    """pasted=None: Website wird abgerufen. pasted='...': eingefügter Seitentext/Quelltext wird statt des Abrufs
+    analysiert (Workaround bei Bot-Schutz). pasted='' liefert nur ein leeres Grundgerüst (Marke aus der Domain)."""
+    if pasted is None:
+        raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000, truncate=True)
+    else:
+        raw, final_url = pasted.encode('utf-8'), normalize_domain(value)
     html_text = raw.decode('utf-8', errors='ignore')
     soup = BeautifulSoup(raw, 'html.parser')
     host = (urlparse(final_url).hostname or '').replace('www.', '')
@@ -993,7 +998,7 @@ for k, v in {'domain': '', 'sender': 'Marke', 'subject': 'Betreff', 'preheader':
              'avatar_bg': AVATAR_BG_DEFAULT, 'avatar_fit': 'Eingepasst', 'avatar_pad': 0, 'selected_image': '',
              'source_image': None, 'banner_logo': None, 'brand_color': '#1375d7', 'banner_headline': '',
              'banner_cta': '', 'banner_mirror': False, 'promo_show': False, 'promo_label': PROMO_LABEL_DEFAULT,
-             'promo_code': PROMO_CODE_DEFAULT}.items():
+             'promo_code': PROMO_CODE_DEFAULT, 'fetch_failed': False, 'fetch_error': '', 'paste_html': ''}.items():
     st.session_state.setdefault(k, v)
 
 
@@ -1027,10 +1032,26 @@ with left:
                           placeholder='z. B. www.beispiel.de')
         with d2:
             analyze_clicked = st.form_submit_button('Vorschläge erstellen', type='primary', use_container_width=True)
-    if analyze_clicked:
+    paste_clicked = manual_clicked = False
+    if st.session_state.fetch_failed:
+        st.warning('Die Website konnte nicht automatisch gelesen werden (' + st.session_state.fetch_error + '). '
+                   'Du kannst trotzdem weiterarbeiten: Öffne die Website im Browser, markiere mit Strg+A / Cmd+A den gesamten Text, '
+                   'kopiere ihn und füge ihn hier ein. Grafiken (Avatar, Preview-Bild) lädst du anschließend selbst hoch.')
+        st.text_area('Seitentext oder Quelltext der Website (optional)', key='paste_html', height=150,
+                     placeholder='Text der Website hier einfügen …')
+        f1, f2 = st.columns(2)
+        with f1:
+            paste_clicked = st.button('Aus eingefügtem Text analysieren', use_container_width=True,
+                                      disabled=not st.session_state.paste_html.strip())
+        with f2:
+            manual_clicked = st.button('Ohne Analyse weiter', use_container_width=True,
+                                       help='Nur die Marke wird aus der Domain abgeleitet; alle Texte trägst du selbst ein.')
+    fetch_failed_now = False
+    if analyze_clicked or paste_clicked or manual_clicked:
+        pasted = st.session_state.paste_html if paste_clicked else ('' if manual_clicked else None)
         try:
             with st.spinner('Website wird analysiert und die Preview vorbereitet …'):
-                result = analyze_site(st.session_state.domain)
+                result = analyze_site(st.session_state.domain, pasted)
                 st.session_state.analysis = result
                 st.session_state.sender = result['brand']
                 st.session_state.subject = result['subject']
@@ -1074,9 +1095,22 @@ with left:
                 if st.session_state.source_image is None and fallback is not None:
                     st.session_state.selected_image = fallback[0]
                     st.session_state.source_image = to_bytes(fallback[1], 'JPEG')
-            st.success('Vorschläge wurden erstellt. Alle Inhalte können unten überschrieben werden.')
+            st.session_state.fetch_failed = False
+            if pasted is None:
+                st.success('Vorschläge wurden erstellt. Alle Inhalte können unten überschrieben werden.')
+            elif pasted:
+                st.success('Vorschläge aus dem eingefügten Text erstellt. Avatar und Preview-Bild bitte unten selbst hochladen.')
+            else:
+                st.info('Es wurde nur die Marke aus der Domain abgeleitet. Texte, Avatar und Preview-Bild bitte unten selbst eintragen bzw. hochladen.')
         except Exception as error:
-            st.error(f'Die Website konnte nicht analysiert werden: {error}')
+            if pasted is None:                       # Abruf gescheitert -> Workaround anbieten statt Sackgasse
+                st.session_state.fetch_failed = True
+                st.session_state.fetch_error = str(error)
+                fetch_failed_now = True
+            else:
+                st.error(f'Die Eingabe konnte nicht analysiert werden: {error}')
+    if fetch_failed_now:
+        st.rerun()
 
     analysis = st.session_state.analysis
     if analysis:
@@ -1128,7 +1162,8 @@ with left:
                      format_func=lambda i: 'Keine Grafik – Initialen auf Fallback-Farbe' if i == -1 else
                      f'{i + 1} · {options[i]["label"]} ({options[i]["detail"]})')
         else:
-            st.caption('Nach der Website-Analyse stehen hier die gefundenen Logos und Icons zur Auswahl.')
+            st.caption('Keine Logos gefunden – bitte unten ein eigenes Avatar / Logo hochladen.' if st.session_state.analysis
+                      else 'Nach der Website-Analyse stehen hier die gefundenen Logos und Icons zur Auswahl.')
         af = st.file_uploader('Eigenes Avatar / Logo hochladen (überschreibt die Auswahl)',
                               type=['svg', 'png', 'jpg', 'jpeg', 'webp'],
                               help='SVG wird im Browser auf dem Avatar-Hintergrund in PNG umgewandelt; transparente Bereiche bleiben weiß.')
