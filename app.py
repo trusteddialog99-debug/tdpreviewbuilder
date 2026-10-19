@@ -75,7 +75,12 @@ def public_url(value):
         return False
 
 
+# Header-Sätze in dieser Reihenfolge: erst schlicht, dann „vollwertiger Browser“. Hintergrund: Bot-Schutz-Systeme (z. B. Akamai
+# bei zalando.de) gleichen den behaupteten Browser (User-Agent, Sec-Fetch-*) mit dem TLS-Fingerabdruck der Verbindung ab. Ein
+# Python-Client, der sich als Chrome ausgibt, fällt dabei oft eher auf als ein schlichter Client. Umgekehrt verlangen andere
+# Seiten (z. B. hm.com) gerade vollständige Browser-Header. Deshalb werden alle Varianten nacheinander probiert.
 BROWSER_HEADERS = [
+    {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8'},
     {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
      'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8', 'Accept-Encoding': 'gzip, deflate',
@@ -84,22 +89,26 @@ BROWSER_HEADERS = [
     {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
      'Accept-Language': 'de-DE,de;q=0.9', 'Accept-Encoding': 'gzip, deflate'},
+    {'User-Agent': 'Mozilla/5.0 (compatible; trustedDialogPreviewBuilder/1.0)', 'Accept': 'text/html,*/*;q=0.8',
+     'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8'},
 ]
+BOT_BLOCK_STATUS = {401, 403, 406, 418, 429, 451, 503, 999}      # typische Antworten eines Bot-Schutzes
 
 
 def safe_fetch(value, max_bytes=7000000, truncate=False):
     """Lädt eine URL. truncate=True: bei Überschreitung von max_bytes wird abgeschnitten statt abgebrochen
-    (für HTML sinnvoll: Meta-Tags, Logos und Farben stehen fast immer am Anfang der Seite)."""
+    (für HTML sinnvoll: Meta-Tags, Logos und Farben stehen fast immer am Anfang der Seite).
+    Wird eine Variante abgelehnt (HTTP-Fehler, Bot-Schutz, Verbindungsabbruch), wird die nächste Header-Variante probiert."""
     if not public_url(value):
         raise ValueError('Die Domain ist nicht öffentlich erreichbar oder wurde aus Sicherheitsgründen blockiert.')
-    last_error = None
+    last_error, last_status = None, None
     for headers in BROWSER_HEADERS:
         try:
-            with requests.get(value, headers=headers, timeout=12, stream=True, allow_redirects=True) as response:
-                if response.status_code in (401, 403, 429, 503):      # vermutlich Bot-Schutz -> nächster Header-Satz
-                    last_error = requests.HTTPError(f'{response.status_code} – die Website blockiert automatische Abrufe (Bot-Schutz)')
-                    continue
-                response.raise_for_status()
+            with requests.get(value, headers=headers, timeout=(8, 15), stream=True, allow_redirects=True) as response:
+                if response.status_code >= 400:
+                    last_status = response.status_code
+                    last_error = requests.HTTPError(f'HTTP {response.status_code}')
+                    continue                                          # nächste Header-Variante
                 if not public_url(response.url):
                     raise ValueError('Die Weiterleitung wurde blockiert.')
                 data = bytearray()
@@ -113,6 +122,10 @@ def safe_fetch(value, max_bytes=7000000, truncate=False):
                 return bytes(data), response.url, response.headers.get('content-type', '')
         except requests.RequestException as error:
             last_error = error
+    if last_status in BOT_BLOCK_STATUS:
+        raise requests.HTTPError(f'{last_status} – die Website blockiert automatische Abrufe (Bot-Schutz)')
+    if last_status:
+        raise requests.HTTPError(f'HTTP-Fehler {last_status} beim Abruf der Website')
     raise last_error or ValueError('Die Website konnte nicht geladen werden.')
 
 

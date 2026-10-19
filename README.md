@@ -3,6 +3,17 @@
 Streamlit-App: Domain eingeben → Absender, Betreff, Preview-Text, Avatar und tD-Preview-Grafik werden vorgeschlagen →
 Live-Vorschau als Gegenüberstellung von **3 GMX-App-Mockups** (iOS) → Export als **eine** PNG-Grafik.
 
+## Korrektur: Website-Abruf (`safe_fetch`)
+
+- v9 sendete ausschließlich „vollwertige“ Browser-Header (Chrome/Safari inkl. `Sec-Fetch-*`). Bot-Schutz-Systeme wie bei
+  zalando.de gleichen das mit dem TLS-Fingerabdruck von Python ab und blockierten dadurch Seiten, die zuvor liefen.
+- Jetzt werden vier Header-Varianten nacheinander probiert: **schlicht** → Chrome → Safari → eigener Bot-Name.
+  Die erste Variante, die HTTP 200 liefert, gewinnt. So bleibt alles erreichbar, was mit der schlichten Variante lief,
+  und Seiten, die volle Browser-Header verlangen (z. B. hm.com), werden weiterhin gelesen.
+- Jeder HTTP-Status ab 400 führt zur nächsten Variante (vorher nur 401/403/429/503). Erst wenn alle Varianten scheitern,
+  erscheint die Meldung samt Workaround „Seitentext einfügen“. Bei 404 u. Ä. lautet die Meldung „HTTP-Fehler …“ statt „Bot-Schutz“.
+- Timeout: 8 s Verbindungsaufbau, 15 s Lesen pro Variante.
+
 ## Neu in dieser Version (Feinschliff)
 
 1. **„Schön war es!“ entfernt:** Fred Fritt ist jetzt eine zweizeilige Mail (58,5 px wie Otto Holler); GMX Magazin und
