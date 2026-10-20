@@ -3,6 +3,24 @@
 Streamlit-App: Domain eingeben → Absender, Betreff, Preview-Text, Avatar und tD-Preview-Grafik werden vorgeschlagen →
 Live-Vorschau als Gegenüberstellung von **3 GMX-App-Mockups** (iOS) → Export als **eine** PNG-Grafik.
 
+## Neu in v12
+
+1. **Wartezeit wieder max. 15 Sekunden:** Startseite insgesamt höchstens 15 s (`PAGE_FETCH_BUDGET`), je Versuch 15 s
+   (`FETCH_READ_TIMEOUT`), Bilder/Logos je 10 s und parallel (`IMAGE_FETCH_BUDGET`).
+2. **Kein Logo mehr in der tD-Preview-Grafik:** Die Grafik enthält nur noch, was unter „Text & Gestaltung“ editierbar ist
+   (Headline, Button, Markenfarbe, Motiv). Auch die Markenzeile entfällt; die Headline nutzt den frei gewordenen Platz.
+   Das Website-Logo dient nur noch zur Erkennung der Markenfarbe.
+3. **Anklickbare Mini-Vorschauen:** Motive und Avatare sind nummerierte Kacheln – ein Klick wählt direkt aus
+   (Motiv inkl. passender Texte). Auswahlliste und Button „Übernehmen“ entfallen. Avatar: zusätzliche Kachel „Initialen“.
+4. **Editor thematisch sortiert:** 1. Unternehmen analysieren → 2. Absender & Texte der Mail → 3. Avatar →
+   4. trustedDialog Preview-Grafik (Motiv, Headline/Button/Markenfarbe/Spiegeln, eigenes Bild, Download, Promo-Code –
+   alles in einem Block).
+5. **Keine doppelten Avatare:** Optisch gleiche Grafiken in mehreren Pixelgrößen (z. B. Favicon 32/96/192 px, App-Icon 180 px)
+   werden zu einem Vorschlag zusammengefasst – in der idealen Auflösung (kleinste Variante ab 132 px, sonst die größte).
+6. **Feste Avatarfarben + Kontrastregel:** Farbwähler entfernt. Logos liegen auf Weiß; helle/weiße Logos, die auf Weiß nicht
+   lesbar wären (Mindestkontrast 2,5:1, `LOGO_MIN_CONTRAST`), automatisch auf Dunkelgrau (#1F1F1F). Initialen auf #B8DDFD
+   in Dunkelblau #0B3C6E (Kontrast 7,9:1; Weiß hätte nur 1,4:1) – auch bei den Beispiel-Mails.
+
 ## Neu in v11
 
 ### 1. Abruf langsamer Seiten (z. B. fcbayern.com: „Read timed out“)

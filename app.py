@@ -24,9 +24,9 @@ PROMO_CODE_MAX = 25            # Code
 PROMO_LABEL_DEFAULT, PROMO_CODE_DEFAULT = 'Codebeschreibung', 'IhrCode'
 # Website-Abruf: Zeitlimits (Sekunden)
 FETCH_CONNECT_TIMEOUT = 8      # Verbindungsaufbau
-FETCH_READ_TIMEOUT = 25        # Warten auf Antwort (vorher 15 s – zu knapp für langsame Server wie fcbayern.com)
-PAGE_FETCH_BUDGET = 60         # Gesamtzeit für alle Versuche beim Abruf der Startseite
-IMAGE_FETCH_BUDGET = 20        # Gesamtzeit je Bild / Logo / Manifest
+FETCH_READ_TIMEOUT = 15       # Warten auf Antwort je Versuch
+PAGE_FETCH_BUDGET = 15         # Gesamtzeit für alle Versuche beim Abruf der Startseite (max. 15 s)
+IMAGE_FETCH_BUDGET = 10        # Gesamtzeit je Bild / Logo / Manifest (werden parallel geladen)
 # Website-Motive
 MOTIF_LIMIT = 8                # so viele Motive stehen maximal zur Auswahl
 # Optional: Bildbeschreibungen per KI (nur aktiv, wenn ANTHROPIC_API_KEY als Streamlit-Secret oder Umgebungsvariable gesetzt ist)
@@ -137,7 +137,7 @@ def friendly_fetch_error(error):
     return str(error)
 
 
-def safe_fetch(value, max_bytes=7000000, truncate=False, budget=25, alternates=False):
+def safe_fetch(value, max_bytes=7000000, truncate=False, budget=IMAGE_FETCH_BUDGET, alternates=False):
     """Lädt eine URL. truncate=True: bei Überschreitung von max_bytes wird abgeschnitten statt abgebrochen
     (für HTML sinnvoll: Meta-Tags, Logos und Farben stehen fast immer am Anfang der Seite). Kommt eine HTML-Seite nur
     teilweise an (Verbindung bricht ab / Timeout mitten im Download), wird der bereits geladene Anfang verwendet.
@@ -837,32 +837,140 @@ def avatar_data_uri(raw):
     return 'data:image/png;base64,' + base64.b64encode(png_data(image)).decode(), width, height
 
 
+AVATAR_DARK_BG = '#1F1F1F'      # Hintergrund für helle/weiße Logos, die auf Weiß nicht lesbar wären
+AVATAR_IDEAL_PX = 132          # Avatar: 33 px Anzeige x 4 (PNG-Export 3-fach + Reserve) -> kleinste Größe ab hier ist ideal
+NAMED_COLORS = {'white': (255, 255, 255), 'black': (0, 0, 0), 'red': (255, 0, 0), 'blue': (0, 0, 255),
+                'green': (0, 128, 0), 'yellow': (255, 255, 0), 'orange': (255, 165, 0), 'gray': (128, 128, 128),
+                'grey': (128, 128, 128), 'silver': (192, 192, 192), 'navy': (0, 0, 128)}
+
+
+def initials_text_color(background):
+    """Initialen immer gut lesbar: Weiß nur bei ausreichendem Kontrast (WCAG 4,5:1), sonst dunkles Blau bzw. Schwarz."""
+    bg = safe_brand_rgb(background)
+    for candidate in ('#FFFFFF', '#0B3C6E', '#000000'):
+        if contrast(ImageColor.getrgb(candidate), bg) >= 4.5:
+            return candidate
+    return '#000000'
+
+
+LOGO_MIN_CONTRAST = 2.5        # Mindestkontrast Logo/Hintergrund (klassisches Orange auf Weiß bleibt auf Weiß)
+
+
+def readable_on(pixels, background, threshold=LOGO_MIN_CONTRAST):
+    """Anteil der sichtbaren Logo-Pixel, die sich ausreichend vom Hintergrund abheben."""
+    if not pixels:
+        return 1.0
+    return sum(1 for p in pixels if contrast(p, background) >= threshold) / len(pixels)
+
+
+def logo_backdrop(image):
+    """Wählt den Avatar-Hintergrund für eine Rastergrafik: Weiß (Standard) – außer das Logo ist hell/weiß und
+    wäre auf Weiß nicht lesbar; dann dunkler Hintergrund. Vollflächige Icons (eigener Hintergrund) bleiben auf Weiß."""
+    rgba = image.convert('RGBA')
+    rgba.thumbnail((64, 64))
+    data = list(rgba.getdata())
+    visible = [p[:3] for p in data if p[3] > 160]
+    if not visible or len(visible) / len(data) > .92:          # deckendes Icon: Hintergrund spielt keine Rolle
+        return AVATAR_BG_DEFAULT
+    white, dark = (255, 255, 255), ImageColor.getrgb(AVATAR_DARK_BG)
+    if readable_on(visible, white) >= .3 or readable_on(visible, white) >= readable_on(visible, dark):
+        return AVATAR_BG_DEFAULT
+    return AVATAR_DARK_BG
+
+
+def svg_backdrop(raw):
+    """Wie logo_backdrop, für SVG (ohne Rendern): wertet die im SVG verwendeten Farben aus.
+    Ohne Farbangabe zeichnet SVG schwarz -> Weiß passt."""
+    text = raw.decode('utf-8', errors='ignore').lower()
+    colors = []
+    for value in re.findall(r'(?:fill|stroke|stop-color|color)\s*[:=]\s*["\']?\s*(#[0-9a-f]{3,6}\b|rgba?\([^)]*\)|[a-z]+)', text):
+        rgb = parse_color(value) or NAMED_COLORS.get(value)
+        if rgb:
+            colors.append(rgb)
+    if not colors:
+        return AVATAR_BG_DEFAULT
+    white, dark = (255, 255, 255), ImageColor.getrgb(AVATAR_DARK_BG)
+    if readable_on(colors, white) >= .3 or readable_on(colors, white) >= readable_on(colors, dark):
+        return AVATAR_BG_DEFAULT
+    return AVATAR_DARK_BG
+
+
+def avatar_info(raw):
+    """Bilddaten -> {'src', 'thumb', 'w', 'h', 'bg', 'sig'} oder None. sig = optischer Fingerabdruck (Dubletten)."""
+    result = avatar_data_uri(raw)
+    if not result:
+        return None
+    src, width, height = result
+    if not width:                                                  # SVG
+        return {'src': src, 'thumb': src, 'w': 0, 'h': 0, 'bg': svg_backdrop(sized_svg(raw)), 'sig': None}
+    image = image_from_bytes(base64.b64decode(src.split(',', 1)[1])).convert('RGBA')
+    flat = Image.new('RGBA', image.size, (255, 255, 255, 255))
+    flat.alpha_composite(image)
+    flat = flat.convert('RGB')
+    ink = ImageOps.invert(flat.convert('L')).point(lambda v: 255 if v > 24 else 0).getbbox()   # bedruckter Bereich
+    core = flat.crop(ink) if ink else flat
+    sig = list(core.resize((16, 16), Image.Resampling.BOX).getdata())
+    small = image.copy()
+    small.thumbnail((96, 96), Image.Resampling.LANCZOS)
+    thumb = 'data:image/png;base64,' + base64.b64encode(png_data(small)).decode()
+    return {'src': src, 'thumb': thumb, 'w': width, 'h': height, 'bg': logo_backdrop(image), 'sig': sig,
+            'ratio': width / height}
+
+
+def same_avatar(a, b):
+    """Optisch gleiche Grafik (nur andere Pixelgröße)?"""
+    if a['sig'] is None or b['sig'] is None:
+        return a['src'] == b['src']
+    if abs(a['ratio'] - b['ratio']) > .12:
+        return False
+    diff = sum(abs(x - y) for p, q in zip(a['sig'], b['sig']) for x, y in zip(p, q)) / (16 * 16 * 3)
+    tiny = min(a['w'], a['h'], b['w'], b['h']) < 48          # Mini-Favicons sind unscharf -> großzügiger vergleichen
+    return diff < (40 if tiny else 22)
+
+
+def ideal_rank(option):
+    """Kleinere Zahl = bessere Auflösung: kleinste Variante ab AVATAR_IDEAL_PX, sonst die größte."""
+    side = min(option['w'], option['h'])
+    return (0, side) if side >= AVATAR_IDEAL_PX else (1, -side)
+
+
+def fetch_avatar_source(source):
+    try:
+        raw = source.encode('utf-8') if source.lstrip().startswith('<svg') else \
+            safe_fetch(source, 2500000, budget=IMAGE_FETCH_BUDGET)[0]
+        return avatar_info(raw)
+    except Exception:
+        return None
+
+
 def load_avatar_options(sources, limit=8):
-    """Lädt die Avatar-Kandidaten, verwirft Duplikate und unbrauchbare Dateien."""
-    options, hashes = [], set()
-    for priority, source, label in sources:
-        if len(options) >= limit:
-            break
-        try:
-            raw = source.encode('utf-8') if source.lstrip().startswith('<svg') else safe_fetch(source, 2500000)[0]
-        except Exception:
+    """Lädt die Avatar-Kandidaten parallel und zeigt jede Grafik nur EINMAL: gleiche Grafik in mehreren Pixelgrößen
+    (z. B. Favicon 32/96/192 px + App-Icon 180 px) wird zu einem Vorschlag in der idealen Auflösung zusammengefasst."""
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        infos = list(pool.map(fetch_avatar_source, [source for _, source, _ in sources]))
+    groups = []                                                    # je optisch gleicher Grafik eine Gruppe
+    for (priority, source, label), info in zip(sources, infos):
+        if not info:
             continue
-        result = avatar_data_uri(raw)
-        if not result:
-            continue
-        data, width, height = result
-        digest = hash(data)
-        if digest in hashes:
-            continue
-        hashes.add(digest)
-        score = priority + (2 if min(width, height) >= 120 else -3 if 0 < min(width, height) < 48 else 0)
-        if width and height and not .6 <= width / height <= 1.6:
+        info.update({'label': label, 'priority': priority, 'url': '' if source.lstrip().startswith('<svg') else source})
+        group = next((g for g in groups if same_avatar(g[0], info)), None)
+        if group is None:
+            groups.append([info])
+        else:
+            group.append(info)
+    options = []
+    for group in groups:
+        rasters = [o for o in group if o['w']]
+        best = min(rasters, key=ideal_rank) if rasters else group[0]
+        side = min(best['w'], best['h'])
+        score = max(o['priority'] for o in group) + (2 if side >= 120 else -3 if 0 < side < 48 else 0)
+        if best['w'] and best['h'] and not .6 <= best['w'] / best['h'] <= 1.6:
             score -= 2                                    # breite Logos passen schlechter in den runden Avatar
-        detail = f'{width}×{height}px' if width else 'SVG'
-        options.append({'src': data, 'label': label, 'detail': detail, 'score': score,
-                        'url': '' if source.lstrip().startswith('<svg') else source})
+        options.append({'src': best['src'], 'thumb': best['thumb'], 'bg': best['bg'], 'label': best['label'],
+                        'detail': f"{best['w']}×{best['h']}px" if best['w'] else 'SVG', 'score': score,
+                        'hidden': len(group) - 1, 'url': best['url']})
     options.sort(key=lambda item: item['score'], reverse=True)
-    return options
+    return options[:limit]
 
 
 def usable_motif(image):
@@ -1053,8 +1161,10 @@ def draw_arrow(draw, x, cy, length, width, color):
         draw.ellipse((px_ - r, py_ - r, px_ + r, py_ + r), fill=color)
 
 
-def generate_preview(source, headline, brand_color='#1375d7', brand_name='', logo=None, cta='', mirror=False):
-    """trustedDialog-Preview (1088 x 464): Marke, dominante Botschaft, ein CTA, ein Motiv, KI-Kennzeichnung."""
+def generate_preview(source, headline, brand_color='#1375d7', cta='', mirror=False):
+    """trustedDialog-Preview (1088 x 464): dominante Botschaft, ein CTA, ein Motiv, KI-Kennzeichnung.
+    Bewusst OHNE Logo/Markenzeile: In der Grafik steht nur, was unter „Grafik-Einstellungen“ editierbar ist
+    (Absender und Avatar zeigt die Mail ohnehin direkt darüber)."""
     S = 2  # Supersampling für glatte Kanten und Schrift
     W, H = PREVIEW_SIZE
     WS, HS = W * S, H * S
@@ -1074,32 +1184,7 @@ def generate_preview(source, headline, brand_color='#1375d7', brand_name='', log
     ox = (W - M - TEXT_W) * S if mirror else M * S    # linke Kante des Textblocks
     box_w = TEXT_W * S
 
-    # 1) Marke: Logo (CI) oder Markenname
-    y_cursor = TOP * S
-    logo_h = 60 * S
-    brand_bottom = y_cursor
-    if logo is not None:
-        probe = logo.resize((32, max(1, int(32 * logo.height / logo.width))))
-        opaque = [p for p in probe.getdata() if p[3] > 128]
-        mean = tuple(sum(p[i] for p in opaque) // len(opaque) for i in range(3)) if opaque else (0, 0, 0)
-        chip = contrast(mean, brand) < 3                # Logo würde auf der Markenfarbe untergehen -> weißer Chip
-        pad_x, pad_y = (14 * S, 9 * S) if chip else (0, 0)
-        scale = min((box_w * .72 - 2 * pad_x) / logo.width, (logo_h - 2 * pad_y) / logo.height, 1.6 * S)
-        lw, lh = max(1, int(logo.width * scale)), max(1, int(logo.height * scale))
-        mark = logo.resize((lw, lh), Image.Resampling.LANCZOS)
-        if chip:
-            draw.rounded_rectangle((ox, y_cursor, ox + lw + 2 * pad_x, y_cursor + lh + 2 * pad_y), radius=14 * S,
-                                   fill=(255, 255, 255))
-        canvas.alpha_composite(mark, (int(ox + pad_x), int(y_cursor + pad_y + (logo_h - 2 * pad_y - lh) / 2)))
-        brand_bottom = y_cursor + logo_h
-    elif brand_name:
-        label = short(brand_name, 22).upper()
-        for size in range(58 * S, 26 * S - 1, -2 * S):
-            font = get_font(size)
-            if font.getlength(label) <= box_w:
-                break
-        draw.text((ox, y_cursor + logo_h / 2 + cap_height(font) / 2), label, font=font, fill=fg, anchor='ls')
-        brand_bottom = y_cursor + logo_h
+    brand_bottom = TOP * S                           # kein Logo-/Markenbereich mehr: Botschaft beginnt oben
 
     # 2) CTA-Button unten
     cta_text = (cta or '').strip().upper() or headline_cta(headline)
@@ -1122,7 +1207,7 @@ def generate_preview(source, headline, brand_color='#1375d7', brand_name='', log
 
     # 3) Hauptbotschaft in der verbleibenden Zone, vertikal zentriert
     msg = campaign_message(headline)
-    zone_top = brand_bottom + 22 * S
+    zone_top = brand_bottom
     zone_bottom = btn_top - 22 * S
     items, gap = fit_message(msg, box_w, zone_bottom - zone_top, S)
     total = sum(i[2] for i in items) + gap * (len(items) - 1)
@@ -1153,10 +1238,9 @@ def headline_cta(headline):
 
 
 @st.cache_data(show_spinner=False, max_entries=24)
-def render_banner(source_bytes, logo_bytes, headline, brand_color, brand_name, cta, mirror):
+def render_banner(source_bytes, headline, brand_color, cta, mirror):
     source = flatten_to_rgb(image_from_bytes(source_bytes))
-    logo = image_from_bytes(logo_bytes) if logo_bytes else None
-    return png_data(generate_preview(source, headline, brand_color, brand_name, logo, cta, mirror))
+    return png_data(generate_preview(source, headline, brand_color, cta, mirror))
 
 
 # ---------------------------------------------------------------------------
@@ -1346,27 +1430,73 @@ def apply_motif_texts(option, analysis, force=False):
     st.session_state.motif_hint = ('Nicht überschrieben, weil du sie angepasst hast: ' + ', '.join(kept) + '.') if kept else ''
 
 
-def motif_gallery(options, selected_index):
-    """Nummerierte Mini-Vorschau aller Motive; das gewählte ist blau umrandet."""
-    cells = []
-    for index, option in enumerate(options):
-        ring = '2px solid #1375d7' if index == selected_index else '1px solid rgba(0,0,0,.15)'
-        cells.append(
-            f'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;width:92px">'
-            f'<img src="{option["thumb"]}" title="{e(option["label"])}" '
-            f'style="width:90px;height:60px;object-fit:cover;border-radius:6px;border:{ring}">'
-            f'<span style="font-size:12px;color:#666;text-align:center;line-height:1.2">{index + 1} · {e(short(option["label"], 18))}</span></div>')
-    return '<div style="display:flex;flex-wrap:wrap;gap:8px 6px;margin:2px 0 8px">' + ''.join(cells) + '</div>'
+def css_url(data_uri):
+    return 'url("' + data_uri.replace('"', '%22') + '")'
+
+
+def render_tiles(prefix, tiles, selected, per_row, on_pick, kind):
+    """Anklickbare, nummerierte Mini-Vorschau. Jede Kachel ist ein echter Streamlit-Button (Klick = ausgewählt);
+    das Vorschaubild liegt per CSS (Klasse st-key-<key>) im Button. kind: 'motif' (Rechteck) oder 'avatar' (Kreis)."""
+    base = f'div[class*="st-key-{prefix}_"] button'
+    if kind == 'motif':
+        css = [f'{base}{{position:relative;width:100%;height:auto;min-height:0;padding:70px 5px 6px;border-radius:8px}}',
+               f'{base}::before{{content:"";position:absolute;left:5px;right:5px;top:5px;height:60px;border-radius:5px;'
+               f'background:#eee var(--thumb) center/cover no-repeat}}']
+    else:
+        css = [f'{base}{{position:relative;width:100%;height:auto;min-height:0;padding:52px 2px 4px;border-radius:10px}}',
+               f'{base}::before{{content:var(--txt,"");position:absolute;left:50%;top:6px;width:40px;height:40px;'
+               f'margin-left:-20px;border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,.14);'
+               f'background:var(--bg,#fff) var(--thumb) center/contain no-repeat;color:var(--fg,#000);'
+               f'font:700 14px/40px "Source Sans Pro",Arial,sans-serif;text-align:center}}']
+    css.append(f'{base} p{{font-size:12px;line-height:1.25;white-space:normal;word-break:break-word}}')
+    for index, tile in enumerate(tiles):
+        props = [f'--thumb:{css_url(tile["image"]) if tile.get("image") else "none"}']
+        if kind == 'avatar':
+            props.append(f'--bg:{tile.get("bg") or AVATAR_BG_DEFAULT}')
+            if tile.get('text'):
+                props += [f'--txt:"{tile["text"][:3]}"', f'--fg:{initials_text_color(tile.get("bg") or AVATAR_DEFAULT)}']
+        if index == selected:
+            props += ['border:2px solid #1375d7!important', 'background-color:#eef5fd!important']
+        css.append(f'.st-key-{prefix}_{index} button{{{";".join(props)}}}')
+    st.markdown('<style>' + '\n'.join(css) + '</style>', unsafe_allow_html=True)
+    for start in range(0, len(tiles), per_row):
+        columns = st.columns(per_row, gap='small')
+        for offset, tile in enumerate(tiles[start:start + per_row]):
+            index = start + offset
+            with columns[offset]:
+                st.button(tile['caption'], key=f'{prefix}_{index}', help=tile.get('help'), on_click=on_pick,
+                          args=(index,), use_container_width=True)
+
+
+def pick_avatar(index):
+    """Klick auf eine Avatar-Kachel. Die letzte Kachel („Initialen“) steht für -1."""
+    st.session_state.avatar_choice = -1 if index >= len(st.session_state.avatar_options) else index
+
+
+def pick_motif(index):
+    """Klick auf eine Motiv-Kachel: Bild sofort übernehmen und Texte passend zum Motiv mitführen."""
+    motif = st.session_state.motif_options[index]
+    st.session_state.motif_error = ''
+    if motif['url'] == st.session_state.selected_image:
+        return
+    try:
+        image = image_from_url(motif['url'])
+    except Exception as error:
+        st.session_state.motif_error = f'Das Bild konnte nicht übernommen werden: {friendly_fetch_error(error)}'
+        return
+    st.session_state.selected_image = motif['url']
+    st.session_state.source_image = to_bytes(image, 'JPEG')
+    apply_motif_texts(motif, st.session_state.analysis)
 
 
 # ====================================================================== UI ===
 SEAL = remote_data_uri(SEAL_URL)
 GMX_LOGO = remote_data_uri(GMX_LOGO_URL)
 
-for k, v in {'domain': '', 'sender': 'Marke', 'subject': 'Betreff', 'preheader': 'Preview-Text', 'color': AVATAR_DEFAULT,
+for k, v in {'domain': '', 'sender': 'Marke', 'subject': 'Betreff', 'preheader': 'Preview-Text',
              'analysis': None, 'generated_preview': None, 'avatar_options': [], 'avatar_choice': -1,
-             'avatar_bg': AVATAR_BG_DEFAULT, 'avatar_fit': 'Eingepasst', 'avatar_pad': 0, 'selected_image': '',
-             'source_image': None, 'banner_logo': None, 'brand_color': '#1375d7', 'banner_headline': '',
+             'avatar_fit': 'Eingepasst', 'avatar_pad': 0, 'selected_image': '', 'motif_error': '',
+             'source_image': None, 'brand_color': '#1375d7', 'banner_headline': '',
              'banner_cta': '', 'banner_mirror': False, 'promo_show': False, 'promo_label': PROMO_LABEL_DEFAULT,
              'promo_code': PROMO_CODE_DEFAULT, 'fetch_failed': False, 'fetch_error': '', 'paste_html': '',
              'motif_options': [], 'motif_notice': '', 'auto_texts': {}, 'headline_source': '', 'motif_hint': ''}.items():
@@ -1438,8 +1568,8 @@ with left:
                 st.session_state.banner_cta = ''
                 st.session_state.avatar_options = load_avatar_options(result['avatar_sources'])
                 st.session_state.avatar_choice = 0 if st.session_state.avatar_options else -1
-                st.session_state.banner_logo = None
-                logo_image = None
+                st.session_state.motif_error = ''
+                logo_image = None                              # Logo dient nur noch der Erkennung der Markenfarbe
                 for logo_url in result['logos']:
                     try:
                         raw, _, _ = safe_fetch(logo_url, 3000000)
@@ -1448,7 +1578,6 @@ with left:
                         continue
                     if prepared is not None:
                         logo_image = prepared
-                        st.session_state.banner_logo = png_data(prepared)
                         break
                 ranked = rank_brand_colors(result['color_scores'], logo_image)
                 result['colors'] = ranked
@@ -1492,78 +1621,100 @@ with left:
             if analysis['description']:
                 st.write('**Beschreibung:** ' + analysis['description'][:350])
             st.caption('Bitte prüfen Sie die vorgeschlagenen Inhalte und stellen Sie sicher, dass die erforderlichen Bild- und Markenrechte vorliegen.')
+
+    # ------------------------------------------------------------------ 2. Absender & Texte der Mail
+    st.subheader('2. Absender & Texte der Mail')
+    with st.container(border=True):
+        st.text_input('Absender / Marke', key='sender', max_chars=37,
+                      help='Markenname des Absenders. Zu lange Namen werden in der Vorschau mit „…“ gekürzt, damit das Siegel sichtbar bleibt.')
+        st.text_input('Betreff', key='subject', max_chars=37)
+        st.text_input('Preview-Text', key='preheader', max_chars=37)
+
+    # ------------------------------------------------------------------ 3. Avatar
+    st.subheader('3. Avatar der trustedDialog-Mail')
+    with st.container(border=True):
+        options = st.session_state.avatar_options
+        if options:
+            st.caption('Grafik anklicken, um sie als Avatar zu verwenden.')
+            letters = ''.join(x[0] for x in (st.session_state.sender or '').split()[:2]).upper() or 'M'
+            tiles = [{'caption': str(i + 1), 'image': o.get('thumb', o['src']), 'bg': o.get('bg', AVATAR_BG_DEFAULT),
+                      'help': f"{o['label']} ({o['detail']})"} for i, o in enumerate(options)]
+            tiles.append({'caption': 'Initialen', 'image': '', 'bg': AVATAR_DEFAULT, 'text': letters,
+                          'help': 'Keine Grafik – Initialen auf der Fallback-Farbe'})
+            choice = st.session_state.avatar_choice
+            render_tiles('apick', tiles, len(options) if choice == -1 else choice, 6, pick_avatar, 'avatar')
+            if 0 <= choice < len(options):
+                o = options[choice]
+                hidden = f" · {o['hidden']} weitere Größe(n) derselben Grafik ausgeblendet" if o.get('hidden') else ''
+                st.caption(f"Gewählt: {choice + 1} · {o['label']} ({o['detail']}){hidden}")
+        else:
+            st.caption('Keine Logos gefunden – bitte unten ein eigenes Avatar / Logo hochladen.' if st.session_state.analysis
+                       else 'Nach der Website-Analyse stehen hier die gefundenen Logos und Icons zur Auswahl.')
+        af = st.file_uploader('Eigenes Avatar / Logo hochladen (überschreibt die Auswahl)',
+                              type=['svg', 'png', 'jpg', 'jpeg', 'webp'],
+                              help='SVG wird im Browser in PNG umgewandelt; transparente Bereiche erhalten automatisch einen gut lesbaren Hintergrund.')
+        st.radio('Darstellung im Kreis', ['Eingepasst', 'Füllend'], key='avatar_fit', horizontal=True,
+                 help='Eingepasst: ganzes Logo sichtbar. Füllend: Kreis wird komplett ausgefüllt (Ränder werden beschnitten).')
+        st.slider('Innenabstand (%)', 0, 30, key='avatar_pad', step=2)
+        st.caption('Farben automatisch und immer gut lesbar: Logos auf Weiß – helle/weiße Logos auf Dunkelgrau; '
+                   f'Initialen auf {AVATAR_DEFAULT} in kontrastreicher Schrift.')
+
+    # ------------------------------------------------------------------ 4. tD-Preview-Grafik (alles in einem Block)
+    st.subheader('4. trustedDialog Preview-Grafik')
+    with st.container(border=True):
         motifs = st.session_state.motif_options
+        st.markdown('**Motiv**')
         if motifs:
             urls = [m['url'] for m in motifs]
-            current = urls.index(st.session_state.selected_image) if st.session_state.selected_image in urls else 0
-            st.markdown(motif_gallery(motifs, current), unsafe_allow_html=True)
-            chosen = st.selectbox('Alternatives Website-Motiv', range(len(motifs)), index=current,
-                                  format_func=lambda i: f"{i + 1} · {motifs[i]['label']}" +
-                                  (' (enthält Text/Logo)' if motifs[i]['text_in_image'] else ''))
+            current = urls.index(st.session_state.selected_image) if st.session_state.selected_image in urls else -1
+            st.caption('Motiv anklicken, um es direkt zu übernehmen.')
+            tiles = [{'caption': f"{i + 1} · {short(m['label'], 22)}" + (' ⚠' if m['text_in_image'] else ''),
+                      'image': m['thumb'], 'help': m['label'] + (' (enthält Text/Logo)' if m['text_in_image'] else '')}
+                     for i, m in enumerate(motifs)]
+            render_tiles('mpick', tiles, current, 3, pick_motif, 'motif')
+            if st.session_state.motif_error:
+                st.error(st.session_state.motif_error)
             st.caption(st.session_state.motif_notice)
-            selected = motifs[current]
-            if selected['teaser']:
-                st.caption(f"Text zum Motiv auf der Website: „{selected['teaser']}“")
+            if current >= 0:
+                selected = motifs[current]
+                if selected['teaser']:
+                    st.caption(f"Text zum Motiv auf der Website: „{selected['teaser']}“")
+                if selected['text_in_image']:
+                    st.warning('Dieses Motiv enthält schon Text, Preise oder ein Logo im Bild. Die Headline der Grafik würde das '
+                               'doppeln – besser ein Motiv ohne eingebrannten Text wählen.')
             if st.session_state.headline_source:
                 st.caption(f"Headline, Betreff und Preview-Text passen zum Motiv – Quelle: {st.session_state.headline_source}.")
             if st.session_state.motif_hint:
                 st.info(st.session_state.motif_hint)
-            if selected['text_in_image']:
-                st.warning('Dieses Motiv enthält schon Text, Preise oder ein Logo im Bild. Die Headline der Grafik würde das '
-                           'doppeln – besser ein Motiv ohne eingebrannten Text wählen.')
-            if st.button('Ausgewähltes Motiv übernehmen'):
-                try:
-                    img = image_from_url(motifs[chosen]['url'])
-                    st.session_state.selected_image = motifs[chosen]['url']
-                    st.session_state.source_image = to_bytes(img, 'JPEG')
-                    apply_motif_texts(motifs[chosen], analysis)
-                    st.rerun()
-                except Exception as error:
-                    st.error(f'Das Bild konnte nicht übernommen werden: {friendly_fetch_error(error)}')
-
-
-    def avatar_gallery(options, background):
-        """Kleine Vorschau aller gefundenen Avatar-Grafiken (rund, auf dem gewählten Hintergrund)."""
-        cells = []
-        for index, option in enumerate(options):
-            cells.append(
-                f'<div style="display:flex;flex-direction:column;align-items:center;gap:4px;width:64px">'
-                f'<div style="width:48px;height:48px;border-radius:50%;overflow:hidden;background:{e(background)};'
-                f'box-shadow:0 0 0 1px rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center">'
-                f'<img src="{option["src"]}" style="width:100%;height:100%;object-fit:contain"></div>'
-                f'<span style="font-size:12px;color:#666">{index + 1}</span></div>')
-        return '<div style="display:flex;flex-wrap:wrap;gap:6px 4px;margin:2px 0 6px">' + ''.join(cells) + '</div>'
-
-
-    st.subheader('2. Inhalte bearbeiten')
-    st.text_input('Absender / Marke', key='sender', max_chars=37,
-                  help='Markenname des Absenders. Zu lange Namen werden in der Vorschau mit „…“ gekürzt, damit das Siegel sichtbar bleibt.')
-    st.text_input('Betreff', key='subject', max_chars=37)
-    st.text_input('Preview-Text', key='preheader', max_chars=37)
-    with st.expander('Avatar der trustedDialog-Mail', expanded=True):
-        options = st.session_state.avatar_options
-        if options:
-            st.markdown(avatar_gallery(options, st.session_state.avatar_bg), unsafe_allow_html=True)
-            st.radio('Avatar-Grafik von der Website', list(range(len(options))) + [-1], key='avatar_choice',
-                     format_func=lambda i: 'Keine Grafik – Initialen auf Fallback-Farbe' if i == -1 else
-                     f'{i + 1} · {options[i]["label"]} ({options[i]["detail"]})')
         else:
-            st.caption('Keine Logos gefunden – bitte unten ein eigenes Avatar / Logo hochladen.' if st.session_state.analysis
-                      else 'Nach der Website-Analyse stehen hier die gefundenen Logos und Icons zur Auswahl.')
-        af = st.file_uploader('Eigenes Avatar / Logo hochladen (überschreibt die Auswahl)',
-                              type=['svg', 'png', 'jpg', 'jpeg', 'webp'],
-                              help='SVG wird im Browser auf dem Avatar-Hintergrund in PNG umgewandelt; transparente Bereiche bleiben weiß.')
-        c1, c2 = st.columns(2)
-        with c1:
-            st.color_picker('Hintergrund hinter dem Logo', key='avatar_bg',
-                            help='Standard: Weiß, damit transparente SVG/PNG-Logos korrekt dargestellt werden.')
-        with c2:
-            st.color_picker('Fallback-Avatarfarbe (Initialen)', key='color')
-        st.radio('Darstellung im Kreis', ['Eingepasst', 'Füllend'], key='avatar_fit', horizontal=True,
-                 help='Eingepasst: ganzes Logo sichtbar. Füllend: Kreis wird komplett ausgefüllt (Ränder werden beschnitten).')
-        st.slider('Innenabstand (%)', 0, 30, key='avatar_pad', step=2)
-    pf = st.file_uploader('Preview-Bild überschreiben (1088 × 464 px)', type=['png', 'jpg', 'jpeg', 'webp'])
-    with st.expander('Promo-Code unter der Preview-Grafik (Mockup 3)', expanded=bool(st.session_state.promo_show)):
+            st.caption('Nach der Website-Analyse stehen hier die gefundenen Motive zur Auswahl.')
+
+        st.markdown('**Text & Gestaltung**')
+        st.text_input('Headline in der Grafik', key='banner_headline',
+                      help='Eine einzige kurze Botschaft, z. B. „50 %“, „Sale“ oder „Neu entdecken“.')
+        st.text_input('Button-Text (CTA)', key='banner_cta', placeholder='automatisch (z. B. JETZT SHOPPEN)')
+        g1, g2 = st.columns([1, 2], vertical_alignment='bottom')
+        with g1:
+            st.color_picker('Markenfarbe', key='brand_color')
+        with g2:
+            if analysis and analysis.get('colors'):
+                st.selectbox('Erkannte Markenfarben', analysis['colors'], index=None, key='palette_choice',
+                             placeholder='Farbe aus der Website wählen', on_change=apply_palette_choice)
+        st.checkbox('Text rechts, Motiv links (gespiegelt)', key='banner_mirror')
+        pf = st.file_uploader('Eigenes Preview-Bild hochladen (ersetzt die generierte Grafik, 1088 × 464 px)',
+                              type=['png', 'jpg', 'jpeg', 'webp'])
+        if st.session_state.source_image:
+            st.session_state.generated_preview = render_banner(
+                st.session_state.source_image, st.session_state.banner_headline, st.session_state.brand_color,
+                st.session_state.banner_cta, bool(st.session_state.banner_mirror))
+        else:
+            st.session_state.generated_preview = None
+        if st.session_state.generated_preview:
+            st.download_button('Generiertes Preview-Bild herunterladen', st.session_state.generated_preview,
+                               file_name=f"trustedDialog_Preview_{re.sub(r'[^A-Za-z0-9._-]+', '_', st.session_state.sender)}_1088x464.png",
+                               mime='image/png', use_container_width=True)
+
+        st.markdown('**Promo-Code unter der Grafik**')
         promos = (analysis or {}).get('promos', [])
         usable = [x for x in promos if len(x['code']) <= PROMO_CODE_MAX]
         if usable:
@@ -1581,27 +1732,6 @@ with left:
                           disabled=not st.session_state.promo_show, help='Der Doppelpunkt wird automatisch ergänzt.')
         with c2:
             st.text_input('Code', key='promo_code', max_chars=PROMO_CODE_MAX, disabled=not st.session_state.promo_show)
-    with st.expander('Grafik-Einstellungen (generiertes Preview-Bild)', expanded=False):
-        st.text_input('Headline in der Grafik', key='banner_headline',
-                      help='Eine einzige kurze Botschaft, z. B. „50 %“, „Sale“ oder „Neu entdecken“.')
-        st.text_input('Button-Text (CTA)', key='banner_cta', placeholder='automatisch (z. B. JETZT SHOPPEN)')
-        st.color_picker('Markenfarbe der Grafik', key='brand_color')
-        if analysis and analysis.get('colors'):
-            st.selectbox('Erkannte Markenfarben', analysis['colors'], index=None, key='palette_choice',
-                         placeholder='Farbe aus der Website wählen', on_change=apply_palette_choice)
-        st.checkbox('Text rechts, Motiv links (gespiegelt)', key='banner_mirror')
-    if st.session_state.source_image:
-        st.session_state.generated_preview = render_banner(
-            st.session_state.source_image, st.session_state.banner_logo, st.session_state.banner_headline,
-            st.session_state.brand_color, st.session_state.sender, st.session_state.banner_cta,
-            bool(st.session_state.banner_mirror))
-    else:
-        st.session_state.generated_preview = None
-    if st.session_state.generated_preview:
-        st.download_button('Generiertes Preview-Bild herunterladen', st.session_state.generated_preview,
-                           file_name=f"trustedDialog_Preview_{re.sub(r'[^A-Za-z0-9._-]+', '_', st.session_state.sender)}_1088x464.png",
-                           mime='image/png', use_container_width=True)
-
 
 # ---------------------------------------------------------------------------
 # Smartphone-Mockups (344 x 701 px) – drei Geräte: 1 ohne trustedDialog, 2 mit trustedDialog, 3 mit trustedDialog Preview
@@ -1761,12 +1891,28 @@ function fitAll(){document.querySelectorAll('.fit').forEach(fitText)}
 fitAll();
 if(document.fonts&&document.fonts.ready) document.fonts.ready.then(fitAll);
 /* Avatar der tD-Mails (Gerät 2 und 3): SVG/PNG auf den gewählten Hintergrund (Standard Weiß) legen und als PNG fixieren. */
+/* Kontrastregel: Logo auf Weiß; ist es hell/weiß (auf Weiß nicht lesbar), automatisch auf Dunkelgrau. */
+function relLum(r,g,b){const c=v=>{v/=255;return v<=.03928?v/12.92:Math.pow((v+.055)/1.055,2.4)};return .2126*c(r)+.7152*c(g)+.0722*c(b);}
+function contrastRatio(l1,l2){return (Math.max(l1,l2)+.05)/(Math.min(l1,l2)+.05);}
+function readableBackground(source,fallback){
+ try{
+  const n=64,probe=document.createElement('canvas');probe.width=n;probe.height=n;
+  const pc=probe.getContext('2d');pc.drawImage(source,0,0,n,n);
+  const d=pc.getImageData(0,0,n,n).data;let vis=0,onWhite=0,onDark=0;
+  const lw=1,ld=relLum(31,31,31);
+  for(let i=0;i<d.length;i+=4){if(d[i+3]<=160)continue;vis++;const l=relLum(d[i],d[i+1],d[i+2]);
+   if(contrastRatio(l,lw)>=2.5)onWhite++;if(contrastRatio(l,ld)>=2.5)onDark++;}
+  if(!vis||vis/(n*n)>.92) return '#FFFFFF';             /* deckendes Icon mit eigenem Hintergrund */
+  return (onWhite/vis>=.3||onWhite>=onDark)?'#FFFFFF':'#1F1F1F';
+ }catch(err){return fallback;}
+}
 async function rasterizeTdAvatar(img){
  const source=new Image();
  await new Promise((resolve,reject)=>{source.onload=resolve;source.onerror=reject;source.src=img.dataset.src;});
  const size=264,canvas=document.createElement('canvas');canvas.width=size;canvas.height=size;
  const ctx=canvas.getContext('2d');
- ctx.fillStyle=img.dataset.bg||'#ffffff';ctx.fillRect(0,0,size,size);
+ const bg=readableBackground(source,img.dataset.bg||'#ffffff');img.style.background=bg;
+ ctx.fillStyle=bg;ctx.fillRect(0,0,size,size);
  const pad=size*Math.max(0,Math.min(.4,Number(img.dataset.pad)||0)),inner=size-2*pad;
  const sw=source.naturalWidth||size,sh=source.naturalHeight||size;
  const scale=img.dataset.fit==='cover'?Math.max(inner/sw,inner/sh):Math.min(inner/sw,inner/sh);
@@ -1884,7 +2030,8 @@ def build_board_html(sender_name, subject_text, preheader_text, avatar_src='', a
     Alle drei Geräte erhalten dieselben Texte (Absender/Marke, Betreff, Preview-Text)."""
     bg = e(avatar_bg or AVATAR_BG_DEFAULT)
     letters = e(''.join(x[0] for x in (sender_name or '').split()[:2]).upper() or 'M')
-    initials = f'<span class="avatar" style="top:6px;background:{e(fallback_color)}">{letters}</span>'
+    initials = (f'<span class="avatar" style="top:6px;background:{e(fallback_color)};color:{initials_text_color(fallback_color)}">'
+                f'{letters}</span>')
     if avatar_src:
         fit = 'cover' if avatar_fit == 'cover' else 'contain'
         pad_px = round(33 * avatar_pad, 2)
@@ -1902,25 +2049,27 @@ def build_board_html(sender_name, subject_text, preheader_text, avatar_src='', a
         phone_html(logo, True, True, *texts, preview_block,          # 3. mit trustedDialog Preview: zusätzlich Preview-Grafik
                    promo_html(promo_label, promo_code) if show_promo else ''),   # ggf. mit Promo-Code
     )
-    out = BOARD_TEMPLATE.replace('__CSS__', PHONE_CSS)
+    # Kontrastregel auch für die Beispiel-Mails (OH, FF, SW): Initialen auf #B8DDFD in gut lesbarer Schrift
+    out = BOARD_TEMPLATE.replace('__CSS__', PHONE_CSS.replace(
+        'justify-content:center;color:#fff;font:700 12.5px/33px', f'justify-content:center;color:{initials_text_color(AVATAR_DEFAULT)};font:700 12.5px/33px'))
     for token, value in {'__PHONE1__': phones[0], '__PHONE2__': phones[1], '__PHONE3__': phones[2],
                          '__BW__': str(BOARD_W), '__BH__': str(BOARD_H), '__DLSENDER__': download_sender}.items():
         out = out.replace(token, value)
     return out
 
 
+avatar_src, avatar_bg = '', AVATAR_BG_DEFAULT
 if af:
-    uploaded = avatar_data_uri(af.getvalue())
-    avatar_src = uploaded[0] if uploaded else uri(af)
+    uploaded = avatar_info(af.getvalue())
+    avatar_src, avatar_bg = (uploaded['src'], uploaded['bg']) if uploaded else (uri(af), AVATAR_BG_DEFAULT)
 elif st.session_state.avatar_options and 0 <= st.session_state.avatar_choice < len(st.session_state.avatar_options):
-    avatar_src = st.session_state.avatar_options[st.session_state.avatar_choice]['src']
-else:
-    avatar_src = ''
+    chosen_avatar = st.session_state.avatar_options[st.session_state.avatar_choice]
+    avatar_src, avatar_bg = chosen_avatar['src'], chosen_avatar.get('bg', AVATAR_BG_DEFAULT)
 psrc = uri(pf) if pf else ('data:image/png;base64,' + base64.b64encode(st.session_state.generated_preview).decode()
                            if st.session_state.generated_preview else '')
 H = build_board_html(st.session_state.sender, st.session_state.subject, st.session_state.preheader, avatar_src,
-                     st.session_state.avatar_bg, 'cover' if st.session_state.avatar_fit == 'Füllend' else 'contain',
-                     st.session_state.avatar_pad / 100, st.session_state.color, psrc,
+                     avatar_bg, 'cover' if st.session_state.avatar_fit == 'Füllend' else 'contain',
+                     st.session_state.avatar_pad / 100, AVATAR_DEFAULT, psrc,
                      st.session_state.promo_label, st.session_state.promo_code, bool(st.session_state.promo_show))
 with right:
     # Rechte Spalte bleibt beim Scrollen der Eingabefelder stehen (sticky) und ist so hoch wie der sichtbare Bereich.
