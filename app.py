@@ -1,4 +1,5 @@
-import base64, colorsys, html, io, ipaddress, json, os, re, socket
+import base64, colorsys, html, io, ipaddress, json, os, re, socket, time
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -21,6 +22,16 @@ AVATAR_BG_DEFAULT = '#FFFFFF'  # Hintergrund hinter Logo-Avataren der tD-Mail (t
 PROMO_LABEL_MAX = 17           # Codebeschreibung (der Doppelpunkt wird automatisch ergänzt)
 PROMO_CODE_MAX = 25            # Code
 PROMO_LABEL_DEFAULT, PROMO_CODE_DEFAULT = 'Codebeschreibung', 'IhrCode'
+# Website-Abruf: Zeitlimits (Sekunden)
+FETCH_CONNECT_TIMEOUT = 8      # Verbindungsaufbau
+FETCH_READ_TIMEOUT = 25        # Warten auf Antwort (vorher 15 s – zu knapp für langsame Server wie fcbayern.com)
+PAGE_FETCH_BUDGET = 60         # Gesamtzeit für alle Versuche beim Abruf der Startseite
+IMAGE_FETCH_BUDGET = 20        # Gesamtzeit je Bild / Logo / Manifest
+# Website-Motive
+MOTIF_LIMIT = 8                # so viele Motive stehen maximal zur Auswahl
+# Optional: Bildbeschreibungen per KI (nur aktiv, wenn ANTHROPIC_API_KEY als Streamlit-Secret oder Umgebungsvariable gesetzt ist)
+ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
+ANTHROPIC_MODEL_DEFAULT = 'claude-haiku-5-5'    # per Secret/Umgebungsvariable ANTHROPIC_MODEL überschreibbar
 
 
 @st.cache_data(show_spinner=False)
@@ -95,37 +106,89 @@ BROWSER_HEADERS = [
 BOT_BLOCK_STATUS = {401, 403, 406, 418, 429, 451, 503, 999}      # typische Antworten eines Bot-Schutzes
 
 
-def safe_fetch(value, max_bytes=7000000, truncate=False):
+def alternate_urls(value):
+    """Dieselbe Seite mit bzw. ohne „www.“ – manche Server antworten nur unter einer der beiden Schreibweisen
+    (oder der eine Host ist deutlich langsamer als der andere)."""
+    try:
+        parts = urlparse(value)
+        host = parts.hostname or ''
+        labels = host.split('.')
+        if host.startswith('www.'):
+            alt = host[4:]
+        elif len(labels) == 2 or (len(labels) == 3 and labels[-2] in SECOND_LEVEL):
+            alt = 'www.' + host
+        else:
+            return []
+        netloc = alt + (f':{parts.port}' if parts.port else '')
+        return [parts._replace(netloc=netloc).geturl()]
+    except Exception:
+        return []
+
+
+def friendly_fetch_error(error):
+    """Verständliche Fehlermeldung statt „HTTPSConnectionPool(host=…): Read timed out“."""
+    if isinstance(error, requests.Timeout):
+        return str(error) if not str(error).startswith(('HTTPSConnectionPool', 'HTTPConnectionPool')) else \
+            'Zeitüberschreitung: Die Website hat nicht rechtzeitig geantwortet'
+    if isinstance(error, requests.exceptions.SSLError):
+        return 'SSL-/Zertifikatsfehler beim Verbindungsaufbau'
+    if isinstance(error, requests.ConnectionError):
+        return 'Verbindung zur Website nicht möglich (Server nicht erreichbar oder Verbindung abgebrochen)'
+    return str(error)
+
+
+def safe_fetch(value, max_bytes=7000000, truncate=False, budget=25, alternates=False):
     """Lädt eine URL. truncate=True: bei Überschreitung von max_bytes wird abgeschnitten statt abgebrochen
-    (für HTML sinnvoll: Meta-Tags, Logos und Farben stehen fast immer am Anfang der Seite).
-    Wird eine Variante abgelehnt (HTTP-Fehler, Bot-Schutz, Verbindungsabbruch), wird die nächste Header-Variante probiert."""
+    (für HTML sinnvoll: Meta-Tags, Logos und Farben stehen fast immer am Anfang der Seite). Kommt eine HTML-Seite nur
+    teilweise an (Verbindung bricht ab / Timeout mitten im Download), wird der bereits geladene Anfang verwendet.
+    Wird eine Variante abgelehnt (HTTP-Fehler, Bot-Schutz, Timeout), wird die nächste Header-Variante probiert.
+    alternates=True: bei Misserfolg zusätzlich die Schreibweise mit/ohne „www.“.
+    budget: Gesamtzeit in Sekunden für alle Versuche zusammen."""
     if not public_url(value):
         raise ValueError('Die Domain ist nicht öffentlich erreichbar oder wurde aus Sicherheitsgründen blockiert.')
-    last_error, last_status = None, None
-    for headers in BROWSER_HEADERS:
+    urls = [value] + [u for u in (alternate_urls(value) if alternates else []) if public_url(u)]
+    started = time.monotonic()
+    deadline = started + budget
+    last_error, last_status, timed_out = None, None, False
+    for headers, url in [(h, u) for h in BROWSER_HEADERS for u in urls]:     # je Header-Variante erst alle Hosts
+        remaining = deadline - time.monotonic()
+        if remaining < 3:
+            break
+        timeout = (min(FETCH_CONNECT_TIMEOUT, remaining), min(FETCH_READ_TIMEOUT, remaining))
         try:
-            with requests.get(value, headers=headers, timeout=(8, 15), stream=True, allow_redirects=True) as response:
+            with requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=True) as response:
                 if response.status_code >= 400:
                     last_status = response.status_code
                     last_error = requests.HTTPError(f'HTTP {response.status_code}')
-                    continue                                          # nächste Header-Variante
+                    continue                                          # nächste Variante
                 if not public_url(response.url):
                     raise ValueError('Die Weiterleitung wurde blockiert.')
+                content_type = response.headers.get('content-type', '')
                 data = bytearray()
-                for chunk in response.iter_content(65536):
-                    data.extend(chunk)
-                    if len(data) > max_bytes:
-                        if truncate:
-                            del data[max_bytes:]
-                            break
-                        raise ValueError('Die abgerufene Datei ist zu groß.')
-                return bytes(data), response.url, response.headers.get('content-type', '')
+                try:
+                    for chunk in response.iter_content(65536):
+                        data.extend(chunk)
+                        if len(data) > max_bytes:
+                            if truncate:
+                                del data[max_bytes:]
+                                break
+                            raise ValueError('Die abgerufene Datei ist zu groß.')
+                except requests.RequestException:
+                    if truncate and len(data) >= 30000:               # Anfang der Seite genügt für die Analyse
+                        return bytes(data), response.url, content_type
+                    raise
+                return bytes(data), response.url, content_type
+        except requests.Timeout as error:
+            timed_out, last_error = True, error
         except requests.RequestException as error:
             last_error = error
     if last_status in BOT_BLOCK_STATUS:
         raise requests.HTTPError(f'{last_status} – die Website blockiert automatische Abrufe (Bot-Schutz)')
     if last_status:
         raise requests.HTTPError(f'HTTP-Fehler {last_status} beim Abruf der Website')
+    if timed_out:
+        raise requests.Timeout(f'Zeitüberschreitung: Die Website hat auch nach {int(time.monotonic() - started)} Sekunden '
+                               'nicht (vollständig) geantwortet')
     raise last_error or ValueError('Die Website konnte nicht geladen werden.')
 
 
@@ -443,11 +506,98 @@ def find_promo_codes(text):
     return out[:6]
 
 
+OFFER_PATTERNS = [r'\b\d{1,2}\s?%\s*(?:Rabatt|sparen|off)?\b',
+                  r'\b\d+(?:[,.]\d{1,2})?\s?€\s*(?:Rabatt|Gutschein|sparen)?\b',
+                  r'\b(?:Willkommensrabatt|Gratis Versand|kostenloser Versand|Sale|Gutschein|Rabatt)\b[^.!?]{0,65}']
+GENERIC_ALT_RE = re.compile(r'^(?:image|img|bild|foto|photo|banner|teaser|hero|stage|slide|picture|grafik|platzhalter|'
+                            r'placeholder|logo|kachel|\d+)$', re.I)
+
+
+def find_offers(text):
+    out = []
+    for pattern in OFFER_PATTERNS:
+        out.extend(re.findall(pattern, text or '', flags=re.I))
+    return unique([re.sub(r'\s+', ' ', x).strip(' -|') for x in out])
+
+
+def clean_text(value, limit=90):
+    return re.sub(r'\s+', ' ', html.unescape(value or '')).strip(' -–—|·•:')[:limit].rstrip()
+
+
+def informative(value):
+    """Alt-Text/Überschrift nur übernehmen, wenn er wirklich beschreibt (kein Dateiname, keine ID, kein „Bild“)."""
+    text = clean_text(value, 120)
+    if not 3 <= len(text) <= 100 or GENERIC_ALT_RE.match(text):
+        return ''
+    if re.search(r'\.(?:jpe?g|png|webp|avif|gif|svg)\b', text, re.I):
+        return ''
+    if sum(ch.isalpha() for ch in text) < len(text) * .5:
+        return ''
+    if ' ' not in text and re.search(r'[_\d]{4,}', text):
+        return ''
+    return text
+
+
+def img_source(tag):
+    """Bild-URL eines <img>: Lazy-Load-Attribute zuerst (src ist dort oft nur ein Platzhalter), dann srcset (größte Variante)."""
+    for attr in ('data-src', 'data-lazy-src', 'data-original', 'src'):
+        value = (tag.get(attr) or '').strip()
+        if value and not value.startswith('data:'):
+            return value
+    for attr in ('srcset', 'data-srcset'):
+        best, best_width = '', -1
+        for part in (tag.get(attr) or '').split(','):
+            bits = part.strip().split()
+            if not bits or bits[0].startswith('data:'):
+                continue
+            width = 0
+            if len(bits) > 1 and bits[1].lower().endswith('w') and bits[1][:-1].isdigit():
+                width = int(bits[1][:-1])
+            if width > best_width:
+                best, best_width = bits[0], width
+        if best:
+            return best
+    return ''
+
+
+def image_context(tag):
+    """Beschreibende Texte zu einem Website-Bild: Alt-Text, Link-Beschriftung, Bildunterschrift sowie Überschrift,
+    Teaser-Text und Angebote im selben Teaser-Block. Daraus entstehen sprechende Namen und passende Texte zum Motiv."""
+    info = {'label': '', 'caption': '', 'heading': '', 'teaser': '', 'offers': [], 'has_context': False}
+    if tag is None:
+        return info
+    link = tag.find_parent('a')
+    candidates = [tag.get('alt'), tag.get('title'), link.get('aria-label') if link else '', link.get('title') if link else '']
+    info['label'] = next((t for t in map(informative, candidates) if t), '')
+    figure = tag.find_parent('figure')
+    caption = figure.find('figcaption') if figure else None
+    info['caption'] = informative(caption.get_text(' ', strip=True)) if caption else ''
+    node, container, raw = tag, None, ''
+    for _ in range(6):
+        node = node.parent
+        if node is None or getattr(node, 'name', None) in (None, 'body', 'html', '[document]', 'header', 'nav', 'footer', 'main'):
+            break
+        text = node.get_text(' ', strip=True)
+        if len(text) > 500:
+            break                                    # zu großer Block: mehrere Teaser gemischt
+        if len(text) >= 12:
+            container, raw = node, text
+            break
+    if container is not None:
+        head = container.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) or container.find(class_=re.compile(r'head|title|claim', re.I))
+        info['heading'] = informative(head.get_text(' ', strip=True)) if head else ''
+        info['teaser'] = clean_text(raw, 140)
+        info['offers'] = find_offers(raw)[:3]
+        info['has_context'] = True
+    return info
+
+
 def analyze_site(value, pasted=None):
     """pasted=None: Website wird abgerufen. pasted='...': eingefügter Seitentext/Quelltext wird statt des Abrufs
     analysiert (Workaround bei Bot-Schutz). pasted='' liefert nur ein leeres Grundgerüst (Marke aus der Domain)."""
     if pasted is None:
-        raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000, truncate=True)
+        raw, final_url, content_type = safe_fetch(normalize_domain(value), 3000000, truncate=True,
+                                                  budget=PAGE_FETCH_BUDGET, alternates=True)
     else:
         raw, final_url = pasted.encode('utf-8'), normalize_domain(value)
     html_text = raw.decode('utf-8', errors='ignore')
@@ -456,22 +606,17 @@ def analyze_site(value, pasted=None):
     brand = detect_brand(soup, host)
     description = meta(soup, 'og:description', 'description')
     body_text = ' '.join(soup.stripped_strings)
-    offers = []
-    patterns = [r'\b\d{1,2}\s?%\s*(?:Rabatt|sparen|off)?\b',
-                r'\b\d+(?:[,.]\d{1,2})?\s?€\s*(?:Rabatt|Gutschein|sparen)?\b',
-                r'\b(?:Willkommensrabatt|Gratis Versand|kostenloser Versand|Sale|Gutschein|Rabatt)\b[^.!?]{0,65}']
-    for pattern in patterns:
-        offers.extend(re.findall(pattern, body_text, flags=re.I))
-    offers = unique([re.sub(r'\s+', ' ', x).strip(' -|') for x in offers])[:8]
+    offers = find_offers(body_text)[:8]
     promos = find_promo_codes(body_text[:400000])
     color_scores = page_color_scores(soup, html_text)
     images = []
     logos = []
     og = meta(soup, 'og:image', 'twitter:image')
-    if og:
-        images.append((6, urljoin(final_url, og)))
+    og_src = urljoin(final_url, og) if og else ''
+    if og_src:
+        images.append((6, og_src, None))
     for tag in soup.find_all('img'):
-        src = tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src')
+        src = img_source(tag)
         if not src:
             continue
         src = urljoin(final_url, src)
@@ -491,12 +636,23 @@ def analyze_site(value, pasted=None):
                     score += 2
             except Exception:
                 pass
-            images.append((score, src))
+            images.append((score, src, tag))
     for link in soup.find_all('link'):
         rel = ' '.join(link.get('rel', [])).lower()
         if any(x in rel for x in ('icon', 'apple-touch-icon')) and link.get('href'):
             logos.append(urljoin(final_url, link['href']))
-    images = unique([x[1] for x in sorted(images, key=lambda item: item[0], reverse=True)])[:10]
+    image_tags, ordered = {}, []
+    for score, src, tag in sorted(images, key=lambda item: item[0], reverse=True):
+        if src not in image_tags:
+            image_tags[src] = tag
+            ordered.append(src)
+    images = ordered[:12]                              # Reserve: einige Bilder fallen später als unbrauchbar/doppelt weg
+    image_info = {src: image_context(image_tags[src]) for src in images}
+    if og_src in image_info and image_tags.get(og_src) is None:        # og:image gehört zur Seite insgesamt
+        og_title = meta(soup, 'og:title')
+        image_info[og_src].update({'label': informative(meta(soup, 'og:image:alt', 'twitter:image:alt')),
+                                   'teaser': clean_text(og_title, 140),
+                                   'offers': find_offers(og_title + ' ' + meta(soup, 'og:description'))[:3]})
     logos = unique(logos)[:8]
     avatar_sources = collect_avatar_sources(soup, final_url)
     offer = offers[0] if offers else ''
@@ -508,6 +664,7 @@ def analyze_site(value, pasted=None):
         preheader = short('Jetzt Vorteile entdecken')
     return {'url': final_url, 'brand': short(brand), 'description': description, 'offers': offers,
             'color_scores': color_scores, 'colors': rank_brand_colors(color_scores), 'images': images,
+            'image_info': image_info,
             'logos': logos, 'avatar_sources': avatar_sources, 'subject': subject, 'preheader': preheader,
             'promos': promos}
 
@@ -1002,6 +1159,206 @@ def render_banner(source_bytes, logo_bytes, headline, brand_color, brand_name, c
     return png_data(generate_preview(source, headline, brand_color, brand_name, logo, cta, mirror))
 
 
+# ---------------------------------------------------------------------------
+# Website-Motive: sprechende Beschreibung, Dubletten, passende Texte
+# ---------------------------------------------------------------------------
+def jpeg_bytes(image, max_side=None, quality=80):
+    image = image.convert('RGB')
+    if max_side:
+        image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, 'JPEG', quality=quality)
+    return buffer.getvalue()
+
+
+def dhash(image):
+    """64-Bit-Differenzhash: erkennt dasselbe Motiv in anderer Größe/Kompression (Dubletten)."""
+    pixels = list(image.convert('L').resize((9, 8), Image.Resampling.LANCZOS).getdata())
+    bits = 0
+    for row in range(8):
+        for col in range(8):
+            bits = (bits << 1) | int(pixels[row * 9 + col] > pixels[row * 9 + col + 1])
+    return bits
+
+
+def same_motif(a, b, tolerance=6):
+    return bin(a ^ b).count('1') <= tolerance
+
+
+def fetch_motif(url):
+    try:
+        raw, _, _ = safe_fetch(url, 9000000, budget=IMAGE_FETCH_BUDGET)
+        return flatten_to_rgb(image_from_bytes(raw))
+    except Exception:
+        return None
+
+
+def anthropic_settings():
+    key = model = ''
+    try:
+        key, model = str(st.secrets.get('ANTHROPIC_API_KEY', '') or ''), str(st.secrets.get('ANTHROPIC_MODEL', '') or '')
+    except Exception:                                    # keine secrets.toml vorhanden
+        pass
+    return ((key or os.environ.get('ANTHROPIC_API_KEY', '')).strip(),
+            (model or os.environ.get('ANTHROPIC_MODEL', '') or ANTHROPIC_MODEL_DEFAULT).strip())
+
+
+MOTIF_PROMPT = (
+    'Oben stehen {n} Bilder von der Website der Marke „{brand}“. Beschreibe jedes Bild für eine Auswahlliste auf Deutsch in '
+    'höchstens 5 Wörtern und nur, was sichtbar ist (Beispiele: „Frau in Unterwäsche“, „Armbanduhren“, „Stadion bei Nacht“, '
+    '„Sneaker auf Betonboden“). Nenne keine Namen realer Personen. Gib außerdem an, ob im Bild selbst gut lesbarer Text, '
+    'ein Preis, eine Rabattangabe oder ein Logo eingebrannt ist (text_im_bild). Antworte ausschließlich mit einem JSON-Array '
+    'ohne Erklärung, genau ein Objekt je Bild in dieser Form: [{"bild": 1, "beschreibung": "Armbanduhren", "text_im_bild": false}]')
+
+
+def describe_motifs_ai(options, brand):
+    """Beschreibt alle Motive in EINEM Aufruf. Rückgabe: ({Index: {'beschreibung', 'text_im_bild'}}, Fehlertext)."""
+    key, model = anthropic_settings()
+    if not key or not options:
+        return {}, ''
+    content = []
+    for number, option in enumerate(options, 1):
+        teaser = option['info'].get('teaser') or ''
+        content.append({'type': 'text', 'text': f'Bild {number}' + (f' (Text daneben auf der Website: „{teaser[:100]}“)' if teaser else '') + ':'})
+        content.append({'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg',
+                                                    'data': base64.b64encode(jpeg_bytes(option['image'], 640, 78)).decode()}})
+    content.append({'type': 'text', 'text': MOTIF_PROMPT.replace('{n}', str(len(options))).replace('{brand}', brand or 'Marke')})
+    try:
+        response = requests.post(ANTHROPIC_URL, timeout=60,
+                                 headers={'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
+                                 json={'model': model, 'max_tokens': 1500, 'messages': [{'role': 'user', 'content': content}]})
+        response.raise_for_status()
+        text = ''.join(b.get('text', '') for b in response.json().get('content', []) if b.get('type') == 'text')
+        data = json.loads(text[text.find('['):text.rfind(']') + 1])
+        out = {}
+        for item in data:
+            index = int(item.get('bild', 0)) - 1
+            if 0 <= index < len(options):
+                out[index] = {'beschreibung': clean_text(str(item.get('beschreibung', '')), 60),
+                              'text_im_bild': bool(item.get('text_im_bild'))}
+        return out, ('' if out else 'leere Antwort')
+    except requests.HTTPError as error:
+        return {}, f'HTTP {error.response.status_code if error.response is not None else ""}'.strip()
+    except Exception as error:                           # Schlüssel/Netz/Format – App läuft mit Website-Texten weiter
+        return {}, type(error).__name__
+
+
+def motif_label(info, ai_text, number):
+    """Sprechender Name statt Dateiname: KI-Beschreibung > Alt-Text > Link-Text > Bildunterschrift > Überschrift > Teaser."""
+    if ai_text:
+        return ai_text
+    for key in ('label', 'caption', 'heading'):
+        if info.get(key):
+            return info[key]
+    if info.get('teaser'):
+        return short(info['teaser'], 60)
+    return f'Website-Bild {number} (ohne Beschreibung)'
+
+
+def prepare_motifs(analysis):
+    """Lädt die Motiv-Kandidaten parallel, entfernt unbrauchbare und doppelte, beschreibt sie und wählt das passendste.
+    Rückgabe: {'options': [...], 'best': Index, 'best_jpeg': Bytes, 'notice': Text}"""
+    urls = analysis.get('images', [])
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        images = list(pool.map(fetch_motif, urls))
+    loaded = [{'url': url, 'image': image, 'info': (analysis.get('image_info') or {}).get(url) or image_context(None)}
+              for url, image in zip(urls, images) if image is not None]
+    failed = len(urls) - len(loaded)
+    pool_ = [o for o in loaded if usable_motif(o['image'])] or loaded
+    kept, hashes, duplicates = [], [], 0
+    for option in pool_:                                  # inhaltlich gleiche Motive (andere Größe) nur einmal anbieten
+        option['hash'] = dhash(option['image'])
+        match = next((i for i, h in enumerate(hashes) if same_motif(h, option['hash'])), None)
+        if match is None:
+            kept.append(option)
+            hashes.append(option['hash'])
+        else:
+            duplicates += 1
+            if option['image'].width * option['image'].height > kept[match]['image'].width * kept[match]['image'].height:
+                richer = max((kept[match]['info'], option['info']),      # größere Variante behalten, Beschreibung nicht verlieren
+                             key=lambda i: sum(bool(i.get(k)) for k in ('label', 'caption', 'heading', 'offers', 'has_context')))
+                option['info'] = richer
+                kept[match] = option
+    kept = kept[:MOTIF_LIMIT]
+    ai, ai_error = describe_motifs_ai(kept, analysis.get('brand', ''))
+    entries = []
+    for index, option in enumerate(kept):
+        described = ai.get(index, {})
+        info = option['info']
+        entries.append({
+            'url': option['url'], 'label': motif_label(info, described.get('beschreibung', ''), index + 1),
+            'described_by_ai': bool(described.get('beschreibung')), 'text_in_image': bool(described.get('text_im_bild')),
+            'teaser': info.get('teaser', ''), 'heading': info.get('heading', ''), 'offers': info.get('offers', []),
+            'has_context': bool(info.get('has_context')), 'size': option['image'].size,
+            'thumb': 'data:image/jpeg;base64,' + base64.b64encode(jpeg_bytes(option['image'], 168, 78)).decode()})
+    best = next((i for i, e in enumerate(entries) if not e['text_in_image']), 0)   # Motiv ohne eingebrannten Text bevorzugen
+    key, _ = anthropic_settings()
+    if ai:
+        notice = 'Die Motive wurden per KI beschrieben.'
+    elif key:
+        notice = f'KI-Beschreibung nicht möglich ({ai_error}) – es werden die Texte der Website verwendet.'
+    else:
+        notice = ('Namen stammen aus den Texten der Website (Alt-Text, Überschrift). Für Bildbeschreibungen per KI den Schlüssel '
+                  'ANTHROPIC_API_KEY hinterlegen (siehe README).')
+    if duplicates or failed:
+        notice += f' Ausgeblendet: {duplicates} doppelte, {failed} nicht ladbare Bilder.'
+    return {'options': entries, 'best': best, 'notice': notice,
+            'best_jpeg': to_bytes(kept[best]['image'], 'JPEG') if kept else None}
+
+
+def motif_texts(option, analysis):
+    """Betreff, Preview-Text und Grafik-Headline passend zum Motiv – nur Wording der Website, nichts erfunden.
+    Quelle: Angebot im Teaser des Motivs > Überschrift am Motiv > allgemeines Angebot (nur wenn das Motiv keinen eigenen
+    Kontext hat) > neutral. Ein Angebot einer ANDEREN Kategorie wird nicht zu einem Motiv gestellt."""
+    info = option or {}
+    brand = analysis['brand']
+    if info.get('offers'):
+        offer, source = info['offers'][0], 'Teaser am Motiv'
+    elif not info.get('has_context') and analysis.get('offers'):
+        offer, source = analysis['offers'][0], 'Angebot der Website (Motiv ohne eigenen Text)'
+    else:
+        offer, source = '', ''
+    if offer:
+        return {'subject': short(('Jetzt ' + offer + ' sichern') if len(offer) < 26 else offer),
+                'preheader': short('Angebot jetzt entdecken'), 'banner_headline': offer}, source
+    if info.get('heading'):
+        return {'subject': short(info['heading']), 'preheader': short('Jetzt entdecken'),
+                'banner_headline': info['heading']}, 'Überschrift am Motiv'
+    return {'subject': short('Neuigkeiten von ' + brand), 'preheader': short('Jetzt Vorteile entdecken'),
+            'banner_headline': short('Neuigkeiten von ' + brand)}, 'neutral (am Motiv wurde kein Angebot gefunden)'
+
+
+TEXT_LABELS = {'subject': 'Betreff', 'preheader': 'Preview-Text', 'banner_headline': 'Headline in der Grafik'}
+
+
+def apply_motif_texts(option, analysis, force=False):
+    """Übernimmt die zum Motiv passenden Texte. Von Hand geänderte Felder bleiben unangetastet (außer force)."""
+    texts, source = motif_texts(option, analysis)
+    auto, kept = st.session_state.auto_texts, []
+    for key, value in texts.items():
+        current = st.session_state.get(key)
+        if force or not current or current == auto.get(key):
+            st.session_state[key] = value
+        elif current != value:
+            kept.append(TEXT_LABELS[key])
+    st.session_state.auto_texts = texts
+    st.session_state.headline_source = source
+    st.session_state.motif_hint = ('Nicht überschrieben, weil du sie angepasst hast: ' + ', '.join(kept) + '.') if kept else ''
+
+
+def motif_gallery(options, selected_index):
+    """Nummerierte Mini-Vorschau aller Motive; das gewählte ist blau umrandet."""
+    cells = []
+    for index, option in enumerate(options):
+        ring = '2px solid #1375d7' if index == selected_index else '1px solid rgba(0,0,0,.15)'
+        cells.append(
+            f'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;width:92px">'
+            f'<img src="{option["thumb"]}" title="{e(option["label"])}" '
+            f'style="width:90px;height:60px;object-fit:cover;border-radius:6px;border:{ring}">'
+            f'<span style="font-size:12px;color:#666;text-align:center;line-height:1.2">{index + 1} · {e(short(option["label"], 18))}</span></div>')
+    return '<div style="display:flex;flex-wrap:wrap;gap:8px 6px;margin:2px 0 8px">' + ''.join(cells) + '</div>'
+
+
 # ====================================================================== UI ===
 SEAL = remote_data_uri(SEAL_URL)
 GMX_LOGO = remote_data_uri(GMX_LOGO_URL)
@@ -1011,7 +1368,8 @@ for k, v in {'domain': '', 'sender': 'Marke', 'subject': 'Betreff', 'preheader':
              'avatar_bg': AVATAR_BG_DEFAULT, 'avatar_fit': 'Eingepasst', 'avatar_pad': 0, 'selected_image': '',
              'source_image': None, 'banner_logo': None, 'brand_color': '#1375d7', 'banner_headline': '',
              'banner_cta': '', 'banner_mirror': False, 'promo_show': False, 'promo_label': PROMO_LABEL_DEFAULT,
-             'promo_code': PROMO_CODE_DEFAULT, 'fetch_failed': False, 'fetch_error': '', 'paste_html': ''}.items():
+             'promo_code': PROMO_CODE_DEFAULT, 'fetch_failed': False, 'fetch_error': '', 'paste_html': '',
+             'motif_options': [], 'motif_notice': '', 'auto_texts': {}, 'headline_source': '', 'motif_hint': ''}.items():
     st.session_state.setdefault(k, v)
 
 
@@ -1048,10 +1406,13 @@ with left:
     paste_clicked = manual_clicked = False
     if st.session_state.fetch_failed:
         st.warning('Die Website konnte nicht automatisch gelesen werden (' + st.session_state.fetch_error + '). '
-                   'Du kannst trotzdem weiterarbeiten: Öffne die Website im Browser, markiere mit Strg+A / Cmd+A den gesamten Text, '
-                   'kopiere ihn und füge ihn hier ein. Grafiken (Avatar, Preview-Bild) lädst du anschließend selbst hoch.')
-        st.text_area('Seitentext oder Quelltext der Website (optional)', key='paste_html', height=150,
-                     placeholder='Text der Website hier einfügen …')
+                   'Ein erneuter Klick auf „Vorschläge erstellen“ hilft bei langsamen Servern manchmal. Sonst geht es so weiter: '
+                   '**Quelltext** der Startseite im Browser öffnen (Strg+U bzw. Cmd+Option+U), mit Strg+A / Cmd+A alles markieren, '
+                   'kopieren und hier einfügen – dann werden auch Logos, Motive und Farben gefunden. '
+                   'Mit reinem Seitentext (Strg+A auf der Website selbst) funktionieren nur Marke, Angebote und Promo-Code; '
+                   'Grafiken lädst du dann selbst hoch.')
+        st.text_area('Quelltext oder Seitentext der Website (optional)', key='paste_html', height=150,
+                     placeholder='Quelltext (empfohlen) oder Text der Website hier einfügen …')
         f1, f2 = st.columns(2)
         with f1:
             paste_clicked = st.button('Aus eingefügtem Text analysieren', use_container_width=True,
@@ -1093,32 +1454,29 @@ with left:
                 result['colors'] = ranked
                 st.session_state.brand_color = ranked[0] if ranked else '#1375d7'
                 st.session_state.source_image = None
-                fallback = None
-                for candidate in result['images']:
-                    try:
-                        selected = image_from_url(candidate)
-                    except Exception:
-                        continue
-                    if fallback is None:
-                        fallback = (candidate, selected)
-                    if usable_motif(selected):
-                        st.session_state.selected_image = candidate
-                        st.session_state.source_image = to_bytes(selected, 'JPEG')
-                        break
-                if st.session_state.source_image is None and fallback is not None:
-                    st.session_state.selected_image = fallback[0]
-                    st.session_state.source_image = to_bytes(fallback[1], 'JPEG')
+                st.session_state.selected_image = ''
+                motifs = prepare_motifs(result)               # laden, Dubletten entfernen, beschreiben, passendes Motiv wählen
+                st.session_state.motif_options = motifs['options']
+                st.session_state.motif_notice = motifs['notice']
+                best = motifs['options'][motifs['best']] if motifs['options'] else None
+                if best:
+                    st.session_state.selected_image = best['url']
+                    st.session_state.source_image = motifs['best_jpeg']
+                apply_motif_texts(best, result, force=True)   # Betreff, Preview-Text und Headline passend zum Motiv
             st.session_state.fetch_failed = False
             if pasted is None:
                 st.success('Vorschläge wurden erstellt. Alle Inhalte können unten überschrieben werden.')
             elif pasted:
-                st.success('Vorschläge aus dem eingefügten Text erstellt. Avatar und Preview-Bild bitte unten selbst hochladen.')
+                if st.session_state.motif_options:
+                    st.success('Vorschläge aus dem eingefügten Quelltext erstellt.')
+                else:
+                    st.success('Vorschläge aus dem eingefügten Text erstellt. Avatar und Preview-Bild bitte unten selbst hochladen.')
             else:
                 st.info('Es wurde nur die Marke aus der Domain abgeleitet. Texte, Avatar und Preview-Bild bitte unten selbst eintragen bzw. hochladen.')
         except Exception as error:
             if pasted is None:                       # Abruf gescheitert -> Workaround anbieten statt Sackgasse
                 st.session_state.fetch_failed = True
-                st.session_state.fetch_error = str(error)
+                st.session_state.fetch_error = friendly_fetch_error(error)
                 fetch_failed_now = True
             else:
                 st.error(f'Die Eingabe konnte nicht analysiert werden: {error}')
@@ -1134,19 +1492,34 @@ with left:
             if analysis['description']:
                 st.write('**Beschreibung:** ' + analysis['description'][:350])
             st.caption('Bitte prüfen Sie die vorgeschlagenen Inhalte und stellen Sie sicher, dass die erforderlichen Bild- und Markenrechte vorliegen.')
-        if analysis['images']:
-            choices = analysis['images']
-            chosen = st.selectbox('Alternatives Website-Motiv', choices,
-                                  index=choices.index(st.session_state.selected_image) if st.session_state.selected_image in choices else 0,
-                                  format_func=lambda x: x.split('/')[-1][:70] or x)
+        motifs = st.session_state.motif_options
+        if motifs:
+            urls = [m['url'] for m in motifs]
+            current = urls.index(st.session_state.selected_image) if st.session_state.selected_image in urls else 0
+            st.markdown(motif_gallery(motifs, current), unsafe_allow_html=True)
+            chosen = st.selectbox('Alternatives Website-Motiv', range(len(motifs)), index=current,
+                                  format_func=lambda i: f"{i + 1} · {motifs[i]['label']}" +
+                                  (' (enthält Text/Logo)' if motifs[i]['text_in_image'] else ''))
+            st.caption(st.session_state.motif_notice)
+            selected = motifs[current]
+            if selected['teaser']:
+                st.caption(f"Text zum Motiv auf der Website: „{selected['teaser']}“")
+            if st.session_state.headline_source:
+                st.caption(f"Headline, Betreff und Preview-Text passen zum Motiv – Quelle: {st.session_state.headline_source}.")
+            if st.session_state.motif_hint:
+                st.info(st.session_state.motif_hint)
+            if selected['text_in_image']:
+                st.warning('Dieses Motiv enthält schon Text, Preise oder ein Logo im Bild. Die Headline der Grafik würde das '
+                           'doppeln – besser ein Motiv ohne eingebrannten Text wählen.')
             if st.button('Ausgewähltes Motiv übernehmen'):
                 try:
-                    img = image_from_url(chosen)
-                    st.session_state.selected_image = chosen
+                    img = image_from_url(motifs[chosen]['url'])
+                    st.session_state.selected_image = motifs[chosen]['url']
                     st.session_state.source_image = to_bytes(img, 'JPEG')
+                    apply_motif_texts(motifs[chosen], analysis)
                     st.rerun()
                 except Exception as error:
-                    st.error(f'Das Bild konnte nicht übernommen werden: {error}')
+                    st.error(f'Das Bild konnte nicht übernommen werden: {friendly_fetch_error(error)}')
 
 
     def avatar_gallery(options, background):

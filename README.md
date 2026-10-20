@@ -3,6 +3,35 @@
 Streamlit-App: Domain eingeben → Absender, Betreff, Preview-Text, Avatar und tD-Preview-Grafik werden vorgeschlagen →
 Live-Vorschau als Gegenüberstellung von **3 GMX-App-Mockups** (iOS) → Export als **eine** PNG-Grafik.
 
+## Neu in v11
+
+### 1. Abruf langsamer Seiten (z. B. fcbayern.com: „Read timed out“)
+- Lesezeit pro Versuch 25 s (vorher 15 s); Gesamtbudget für die Startseite 60 s, für Bilder/Logos je 20 s
+  (`FETCH_READ_TIMEOUT`, `PAGE_FETCH_BUDGET`, `IMAGE_FETCH_BUDGET`). Die Header-Varianten aus v10 bleiben erhalten.
+- Bei Fehlschlag wird dieselbe Seite zusätzlich **mit bzw. ohne „www.“** abgerufen (`alternate_urls`).
+- Kommt die HTML-Seite nur teilweise an (Abbruch mitten im Download), wird der geladene Anfang (ab 30 KB) genutzt –
+  Meta-Tags, Logos und Farben stehen fast immer dort.
+- Verständliche Meldung statt `HTTPSConnectionPool(…)`. Der Hinweis zum Workaround empfiehlt jetzt den **Quelltext**
+  (Strg+U → Strg+A → Strg+C): Damit werden auch Logos, Motive und Farben gefunden, nicht nur Texte.
+- Grenze: Antwortet ein Server gar nicht (Geo-/Rechenzentrums-Sperre, Tarpit), hilft nur der Quelltext-Workaround.
+
+### 2. Sprechende Namen bei „Alternatives Website-Motiv“
+- Statt Dateinamen: nummerierte Mini-Vorschau aller Motive plus Beschreibung, z. B. „Armbanduhren“, „Frau in Unterwäsche“.
+- Namen stammen (in dieser Reihenfolge) aus: **KI-Bildbeschreibung** (optional, s. u.) → Alt-Text → Link-Beschriftung →
+  Bildunterschrift → Überschrift im Teaser → Teaser-Text. Dateinamen und IDs werden nie als Beschreibung genutzt.
+- Optional per KI: Ist `ANTHROPIC_API_KEY` gesetzt (Streamlit Cloud: *Settings → Secrets*, lokal: Umgebungsvariable), werden
+  alle Motive in **einem** Aufruf beschrieben (Modell `claude-haiku-5-5`, per `ANTHROPIC_MODEL` änderbar). Dabei werden
+  verkleinerte Kopien der Website-Bilder an die Anthropic-API gesendet. Ohne Schlüssel läuft alles mit den Website-Texten.
+- Zusätzlich: srcset/Lazy-Load-Bilder werden erkannt, unbrauchbare (zu kleine/schmale) Bilder ausgeblendet.
+
+### 3. Texte passend zum Motiv, keine Dopplungen
+- Betreff, Preview-Text und Headline der Grafik werden aus dem **Teaser des gewählten Motivs** abgeleitet (Angebot oder
+  Überschrift im selben Block). Ein Angebot einer anderen Kategorie wird nicht zu einem Motiv gestellt. Fehlt am Motiv ein
+  Text, wird neutral formuliert; ein allgemeines Angebot nur bei Motiven ohne eigenen Kontext (z. B. og:image).
+- Beim Wechsel des Motivs werden die Texte mitgeführt – von Hand geänderte Felder bleiben unangetastet (Hinweis erscheint).
+- Nicht redundant: **dasselbe Motiv in mehreren Größen** wird nur einmal angeboten (Bild-Hash, größere Variante bleibt);
+  Motive mit **eingebranntem Text/Preis/Logo** (nur mit KI erkennbar) werden nicht vorausgewählt und mit Warnung markiert.
+
 ## Korrektur: Website-Abruf (`safe_fetch`)
 
 - v9 sendete ausschließlich „vollwertige“ Browser-Header (Chrome/Safari inkl. `Sec-Fetch-*`). Bot-Schutz-Systeme wie bei
